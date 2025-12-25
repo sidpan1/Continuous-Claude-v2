@@ -46,6 +46,22 @@ else
     echo "    Run manually: sqlite3 .claude/cache/artifact-index/context.db < scripts/artifact_schema.sql"
 fi
 
+# Check for existing MCP config (would override global)
+if [ -f "$PROJECT_DIR/.mcp.json" ]; then
+    echo ""
+    echo "⚠️  Found existing .mcp.json in this project."
+    echo "   Claude Code will use PROJECT MCP servers, not your global config."
+    echo ""
+    read -p "Rename to .mcp.json.bak to use global MCP config instead? [y/N] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        mv "$PROJECT_DIR/.mcp.json" "$PROJECT_DIR/.mcp.json.bak"
+        echo "  ✓ Renamed to .mcp.json.bak (global MCP config will be used)"
+    else
+        echo "  → Keeping .mcp.json (project MCP servers will be active)"
+    fi
+fi
+
 # Add to .gitignore if it exists
 if [ -f "$PROJECT_DIR/.gitignore" ]; then
     if ! grep -q ".claude/cache/" "$PROJECT_DIR/.gitignore" 2>/dev/null; then
