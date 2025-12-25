@@ -74,6 +74,32 @@ TOOL_COUNT=${TOOL_COUNT:-0}
 
 log "INFO" "Session ended: $SESSION_ID (turns=$TURN_COUNT, tools=$TOOL_COUNT)"
 
+# Auto-extract learnings from session (runs in background)
+# Uses root_span_id as the Braintrust query key
+if [ -n "$ROOT_SPAN_ID" ]; then
+    log "INFO" "Triggering learning extraction for session $ROOT_SPAN_ID"
+    (
+        # Source API keys
+        [ -f "$HOME/.claude/.env" ] && source "$HOME/.claude/.env"
+
+        # Find project directory (check common locations)
+        PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+        ANALYZE_SCRIPT="$PROJECT_DIR/scripts/braintrust_analyze.py"
+
+        # Fall back to global install
+        if [ ! -f "$ANALYZE_SCRIPT" ]; then
+            ANALYZE_SCRIPT="$HOME/.claude/scripts/braintrust_analyze.py"
+        fi
+
+        if [ -f "$ANALYZE_SCRIPT" ]; then
+            cd "$PROJECT_DIR" 2>/dev/null || cd "$HOME"
+            uv run python "$ANALYZE_SCRIPT" --learn --session-id "$ROOT_SPAN_ID" \
+                >> "$HOME/.claude/cache/learn.log" 2>&1
+        fi
+    ) &
+    disown
+fi
+
 # Clean up session state (optional - keeps state file cleaner)
 # Uncomment to remove session from state after it ends:
 # STATE=$(load_state)
