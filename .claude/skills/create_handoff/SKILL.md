@@ -112,36 +112,14 @@ turn_span_id: [Current turn span ID - see step 1b]
 ```
 ---
 
-### 3. Confirm completion
+### 3. Mark Session Outcome (REQUIRED)
 
-Once the document is saved, respond to the user with the template between <template_response></template_response> XML tags. do NOT include the tags in your response.
+**IMPORTANT:** Before responding to the user, you MUST ask about the session outcome.
 
-<template_response>
-Handoff created and synced! You can resume from this handoff in a new session with the following command:
-
-```bash
-/resume_handoff path/to/handoff.md
-```
-</template_response>
-
-for example (between <example_response></example_response> XML tags - do NOT include these tags in your actual response to the user)
-
-<example_response>
-Handoff created and synced! You can resume from this handoff in a new session with the following command:
-
-```bash
-/resume_handoff thoughts/shared/handoffs/open-source-release/2025-01-08_13-44-55_create-context-compaction.md
-```
-</example_response>
-
----
-
-### 4. Mark Session Outcome
-
-After confirming the handoff was created, use the AskUserQuestion tool to ask about the session outcome:
+Use the AskUserQuestion tool with these exact options:
 
 ```
-Question: "How did this task/session go?"
+Question: "How did this session go?"
 Options:
   - SUCCEEDED: Task completed successfully
   - PARTIAL_PLUS: Mostly done, minor issues remain
@@ -149,17 +127,27 @@ Options:
   - FAILED: Task abandoned or blocked
 ```
 
-Based on the user's response, run:
+After the user responds, mark the outcome:
 ```bash
-uv run python scripts/artifact_mark.py --handoff <handoff_id> --outcome <OUTCOME>
+# Get the handoff ID (use the one just created)
+HANDOFF_ID=$(sqlite3 .claude/cache/artifact-index/context.db "SELECT id FROM handoffs ORDER BY indexed_at DESC LIMIT 1")
+
+# Mark the outcome
+uv run python scripts/artifact_mark.py --handoff $HANDOFF_ID --outcome <USER_CHOICE>
 ```
 
-To get the handoff_id, query the database:
-```bash
-sqlite3 .claude/cache/artifact-index/context.db "SELECT id FROM handoffs ORDER BY indexed_at DESC LIMIT 1"
-```
+If the database doesn't exist yet (first handoff), skip the marking step but still ask the question.
 
-If the database doesn't exist yet (first handoff), skip this step.
+### 4. Confirm completion
+
+After marking the outcome, respond to the user:
+
+```
+Handoff created! Outcome marked as [OUTCOME].
+
+Resume in a new session with:
+/resume_handoff path/to/handoff.md
+```
 
 ---
 ##.  Additional Notes & Instructions
