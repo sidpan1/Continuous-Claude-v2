@@ -98,6 +98,7 @@ echo "Copying scripts..."
 mkdir -p "$GLOBAL_DIR/scripts"
 cp "$SCRIPT_DIR/scripts/"*.py "$GLOBAL_DIR/scripts/" 2>/dev/null || true
 cp "$SCRIPT_DIR/.claude/scripts/"*.sh "$GLOBAL_DIR/scripts/" 2>/dev/null || true
+cp "$SCRIPT_DIR/init-project.sh" "$GLOBAL_DIR/scripts/" 2>/dev/null || true
 
 echo "Copying plugins..."
 mkdir -p "$GLOBAL_DIR/plugins"
@@ -141,7 +142,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "FOR EACH PROJECT - Initialize project structure:"
 echo ""
 echo "  cd /path/to/your/project"
-echo "  $SCRIPT_DIR/init-project.sh"
+echo "  ~/.claude/scripts/init-project.sh"
 echo ""
 echo "This creates thoughts/, .claude/cache/, and the Artifact Index"
 echo "database so all hooks work immediately."
