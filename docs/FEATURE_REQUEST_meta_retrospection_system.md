@@ -631,6 +631,556 @@ Before running full benchmarks, use these representative tasks for development t
 
 ---
 
+# Experiment Design
+
+## Overview
+
+This experiment tests whether the hierarchical meta-retrospection system improves coding agent performance compared to baseline (no learning) and single-layer retrospection.
+
+### Research Questions
+
+1. **RQ1**: Does retrospection improve task success rate compared to no learning?
+2. **RQ2**: Does meta-retrospection improve success rate beyond retrospection alone?
+3. **RQ3**: Does the system reduce recurring failure modes over time?
+4. **RQ4**: Does human policy tuning provide additional improvement?
+5. **RQ5**: Do learnings transfer across different task types?
+
+## Experimental Design
+
+### Design Type: Within-Subjects Longitudinal Study
+
+We use a **within-subjects** design where the same system progresses through conditions sequentially. This mirrors real-world usage where learnings accumulate over time.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         EXPERIMENT TIMELINE                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Phase 0        Phase 1         Phase 2         Phase 3        Phase 4  │
+│  (Warmup)       (Baseline)      (Retro)         (Meta)         (Human)  │
+│                                                                          │
+│  ──────────     ──────────      ──────────      ──────────     ──────── │
+│  10 tasks       50 tasks        50 tasks        50 tasks       25 tasks │
+│  (discard)      No learning     +Retrospect     +Meta-Retro    +Policy  │
+│                                                                          │
+│                 ↓               ↓               ↓              ↓        │
+│                 Measure         Measure         Measure        Measure  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why Not Between-Subjects?
+
+Between-subjects (parallel groups) would require:
+- Multiple identical agent instances
+- Ensuring no cross-contamination of learnings
+- Much larger sample sizes for statistical power
+
+Within-subjects is more practical and matches the "compound learning" hypothesis we're testing.
+
+## Variables
+
+### Independent Variables (Manipulated)
+
+| Variable | Levels | Description |
+|----------|--------|-------------|
+| **Learning Condition** | 4 | None, Retrospection, Meta-Retrospection, Human-Tuned |
+| **Task Type** | 3 | Bug fix, Feature, Refactor |
+| **Task Difficulty** | 3 | Easy, Medium, Hard (per SWE-bench labels) |
+
+### Dependent Variables (Measured)
+
+| Variable | Type | Measurement |
+|----------|------|-------------|
+| **Success Rate** | Binary | Task passes all tests (0/1) |
+| **Partial Success** | Ordinal | 0=fail, 1=partial, 2=full |
+| **Time to Solution** | Continuous | Minutes from start to first passing attempt |
+| **Attempts Required** | Count | Number of code submissions before success |
+| **Recurring Issues** | Count | Same failure mode appearing across tasks |
+| **Learning Application** | Binary | Was a prior learning used? (manual audit) |
+| **Drift Score** | Continuous | 0.0-1.0 (meta-retrospector output) |
+
+### Control Variables (Held Constant)
+
+| Variable | Value | Rationale |
+|----------|-------|-----------|
+| Model | Claude Opus 4.5 | Consistency |
+| Temperature | 0.0 | Reproducibility |
+| Max tokens | 16K | Prevent truncation |
+| Timeout per task | 30 min | Practical limit |
+| Repository state | Fresh clone per task | No contamination |
+
+## Task Selection
+
+### Source: SWE-bench Lite (Stratified Sample)
+
+From 300 tasks, select 185 tasks stratified by:
+
+```
+Task Distribution:
+├── Bug Fixes (100 tasks)
+│   ├── Easy: 35
+│   ├── Medium: 40
+│   └── Hard: 25
+├── Features (50 tasks)
+│   ├── Easy: 15
+│   ├── Medium: 20
+│   └── Hard: 15
+└── Refactors (35 tasks)
+    ├── Easy: 10
+    ├── Medium: 15
+    └── Hard: 10
+```
+
+### Task Assignment to Phases
+
+```python
+# Randomized block assignment
+import random
+
+def assign_tasks(tasks, phases):
+    """
+    Assign tasks to phases ensuring balanced difficulty/type per phase.
+    """
+    # Group by (type, difficulty)
+    groups = defaultdict(list)
+    for task in tasks:
+        groups[(task.type, task.difficulty)].append(task)
+
+    # Shuffle within groups
+    for group in groups.values():
+        random.shuffle(group)
+
+    # Distribute evenly across phases
+    phase_tasks = {p: [] for p in phases}
+    for group_tasks in groups.values():
+        for i, task in enumerate(group_tasks):
+            phase = phases[i % len(phases)]
+            phase_tasks[phase].append(task)
+
+    return phase_tasks
+```
+
+### Task Ordering Within Phases
+
+**Within each phase**, tasks are ordered to test learning transfer:
+
+```
+Phase N task order:
+├── Block 1: 5 bug fixes (similar domain)
+├── Block 2: 5 features (similar domain)
+├── Block 3: 5 mixed tasks
+├── Block 4: 5 bug fixes (different domain)
+├── Block 5: 5 features (different domain)
+└── ... (repeat pattern)
+```
+
+This tests both **within-domain transfer** (learning from bug fix → applying to similar bug fix) and **cross-domain transfer** (learning from Django → applying to Flask).
+
+## Procedure
+
+### Phase 0: Warmup (Discarded)
+
+**Purpose**: Establish baseline agent behavior, catch setup issues.
+
+```
+Tasks: 10 random tasks (not counted in analysis)
+Learning: Disabled
+Output: Verify infrastructure works
+```
+
+### Phase 1: Baseline (No Learning)
+
+**Purpose**: Measure unassisted agent performance.
+
+```
+Tasks: 50 tasks (stratified sample)
+Learning: Disabled (no retrospection)
+Data collected:
+  - Success rate per task
+  - Time to solution
+  - Failure mode categorization (manual)
+  - Attempts per task
+```
+
+**Procedure per task:**
+1. Clone fresh repository
+2. Present issue description to agent
+3. Agent attempts solution (max 30 min, max 5 attempts)
+4. Run test suite
+5. Record outcome
+6. **No retrospection performed**
+
+### Phase 2: Retrospection Only
+
+**Purpose**: Measure impact of single-session learning.
+
+```
+Tasks: 50 tasks (stratified sample)
+Learning: Retrospection enabled, meta-retrospection disabled
+Data collected:
+  - All baseline metrics
+  - Retrospection outputs (JSON)
+  - Learning application audit (did prior learning help?)
+```
+
+**Procedure per task:**
+1. Load learnings from prior retrospections into context
+2. Present issue description
+3. Agent attempts solution
+4. Run test suite
+5. Record outcome
+6. **Run retrospection** → store structured output
+7. Annotator reviews: "Was a prior learning applied? Which one?"
+
+### Phase 3: Meta-Retrospection Active
+
+**Purpose**: Measure impact of trend detection and retrospector tuning.
+
+```
+Tasks: 50 tasks (stratified sample)
+Learning: Full system (retrospection + meta-retrospection)
+Meta-retro frequency: Every 5 tasks
+Data collected:
+  - All prior metrics
+  - Meta-retrospection outputs
+  - Retrospector prompt adjustments made
+  - Drift scores
+```
+
+**Procedure:**
+1. Tasks 1-5: Normal retrospection
+2. After task 5: Run meta-retrospection
+   - Analyze learnings 1-5
+   - Identify recurring issues
+   - Adjust retrospector prompts if needed
+3. Tasks 6-10: Retrospection with adjusted prompts
+4. After task 10: Run meta-retrospection
+5. ... continue pattern
+
+**Key measurement**: Do recurring issues decrease after meta-retrospection runs?
+
+### Phase 4: Human Policy Tuning
+
+**Purpose**: Measure marginal value of human-in-the-loop.
+
+```
+Tasks: 25 tasks (stratified sample)
+Learning: Full system + human policy review
+Human intervention: After task 10, review dashboard and adjust policy
+Data collected:
+  - All prior metrics
+  - Human time spent reviewing
+  - Policy changes made
+  - Performance before/after intervention
+```
+
+**Procedure:**
+1. Tasks 1-10: Run with existing policies
+2. Human reviews dashboard:
+   - Time recorded
+   - Changes documented
+3. Tasks 11-25: Run with updated policies
+4. Compare pre/post intervention
+
+## Analysis Plan
+
+### Primary Analysis: Success Rate by Condition
+
+**Hypothesis**: Success rate increases with each learning layer.
+
+```
+H0: μ_baseline = μ_retro = μ_meta = μ_human
+H1: μ_baseline < μ_retro < μ_meta < μ_human
+```
+
+**Statistical test**: Cochran's Q test (repeated measures on binary outcome), followed by pairwise McNemar tests with Bonferroni correction.
+
+**Required sample size**: With α=0.05, power=0.80, expected effect size (Cohen's h=0.3), n≈44 per condition. We use n=50 for safety margin.
+
+### Secondary Analyses
+
+#### 1. Recurring Issue Reduction
+
+**Metric**: Count of failure modes appearing 3+ times within a phase.
+
+```python
+def recurring_issue_rate(phase_failures):
+    """
+    Calculate % of failures that are recurring.
+    """
+    mode_counts = Counter(f.failure_mode for f in phase_failures)
+    recurring = sum(1 for f in phase_failures if mode_counts[f.failure_mode] >= 3)
+    return recurring / len(phase_failures) if phase_failures else 0
+```
+
+**Expected**:
+- Phase 1: ~40% recurring
+- Phase 2: ~25% recurring
+- Phase 3: ~15% recurring
+
+**Test**: Chi-square test for trend across phases.
+
+#### 2. Learning Transfer Analysis
+
+**Within-domain transfer**: Compare success rate on task N+1 when task N was same type/domain.
+
+**Cross-domain transfer**: Compare success rate on task N+1 when task N was different type/domain.
+
+```python
+def transfer_analysis(tasks_with_outcomes):
+    """
+    Analyze whether prior learnings transfer.
+    """
+    within_domain = []
+    cross_domain = []
+
+    for i in range(1, len(tasks)):
+        current = tasks[i]
+        prior = tasks[i-1]
+
+        if current.domain == prior.domain:
+            within_domain.append(current.success)
+        else:
+            cross_domain.append(current.success)
+
+    return {
+        'within_domain_rate': mean(within_domain),
+        'cross_domain_rate': mean(cross_domain),
+    }
+```
+
+#### 3. Time-to-Solution Trend
+
+**Hypothesis**: Time decreases as learnings accumulate.
+
+**Analysis**: Linear regression of time vs. task number within each phase, controlling for difficulty.
+
+```python
+# Model: time ~ task_number + difficulty + (1|task_type)
+import statsmodels.formula.api as smf
+
+model = smf.mixedlm(
+    "time ~ task_number + difficulty",
+    data=phase_data,
+    groups=phase_data["task_type"]
+)
+```
+
+#### 4. Drift Detection Validation
+
+**Metric**: Correlation between drift score and human judgment.
+
+**Procedure**:
+1. Meta-retrospector outputs drift scores
+2. Human annotator rates each learning batch: "How aligned with original intent?" (1-5)
+3. Compute Spearman correlation
+
+**Threshold**: r > 0.6 indicates drift score is meaningful.
+
+### Failure Mode Taxonomy
+
+For consistent categorization, use this taxonomy:
+
+```yaml
+failure_modes:
+  understanding:
+    - misread_requirements: "Solved wrong problem"
+    - missed_edge_case: "Didn't handle boundary condition"
+    - wrong_scope: "Changed too much or too little"
+
+  implementation:
+    - syntax_error: "Code doesn't parse"
+    - type_error: "Type mismatch"
+    - logic_error: "Code runs but wrong output"
+    - import_error: "Missing or wrong imports"
+
+  environment:
+    - test_flakiness: "Test passes/fails intermittently"
+    - setup_failure: "Couldn't configure environment"
+    - timeout: "Exceeded time limit"
+
+  process:
+    - premature_commit: "Submitted before testing"
+    - incomplete_fix: "Partial solution"
+    - regression: "Fixed one thing, broke another"
+```
+
+## Data Collection Infrastructure
+
+### Logging Schema
+
+```python
+from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional
+
+class TaskAttempt(BaseModel):
+    task_id: str
+    phase: int  # 1-4
+    condition: str  # baseline|retro|meta|human
+
+    # Timing
+    started_at: datetime
+    completed_at: datetime
+
+    # Outcome
+    success: bool
+    partial_success: int  # 0, 1, 2
+    attempts: int
+
+    # Failure analysis (if failed)
+    failure_mode: Optional[str]
+    failure_details: Optional[str]
+
+    # Learning data (phases 2+)
+    learnings_loaded: list[str]  # IDs of learnings in context
+    learning_applied: Optional[str]  # ID of learning that helped
+
+    # Meta data (phases 3+)
+    meta_batch_id: Optional[str]
+    drift_score: Optional[float]
+
+    # Traces
+    braintrust_trace_id: str
+    session_id: str
+
+class ExperimentRun(BaseModel):
+    experiment_id: str
+    started_at: datetime
+    model: str
+    temperature: float
+
+    phases: dict[int, list[TaskAttempt]]
+
+    # Aggregates (computed)
+    success_rates: dict[int, float]
+    recurring_issue_rates: dict[int, float]
+```
+
+### Storage
+
+```
+.claude/cache/experiments/
+├── <experiment_id>/
+│   ├── config.json           # Experiment parameters
+│   ├── task_assignments.json # Which tasks in which phase
+│   ├── attempts/
+│   │   └── <task_id>.json    # Per-task attempt data
+│   ├── retrospections/
+│   │   └── <task_id>.json    # Retrospection outputs
+│   ├── meta_retrospections/
+│   │   └── batch_<n>.json    # Meta outputs
+│   └── analysis/
+│       ├── phase_1_summary.json
+│       ├── phase_2_summary.json
+│       └── final_report.md
+```
+
+## Execution Timeline
+
+### Pre-Experiment (1 week)
+
+| Day | Activity |
+|-----|----------|
+| 1-2 | Finalize task selection, verify SWE-bench setup |
+| 3-4 | Build logging infrastructure, test on 5 tasks |
+| 5 | Recruit human annotator for failure mode coding |
+| 6 | Dry run: Phase 0 (warmup) |
+| 7 | Review warmup results, fix any issues |
+
+### Experiment Execution (2 weeks)
+
+| Day | Phase | Tasks | Notes |
+|-----|-------|-------|-------|
+| 1-2 | Phase 1 | 50 | Baseline, no learning |
+| 3-4 | Phase 2 | 50 | Retrospection enabled |
+| 5 | Analysis checkpoint | - | Verify data quality, adjust if needed |
+| 6-8 | Phase 3 | 50 | Meta-retrospection every 5 tasks |
+| 9 | Human review | - | Dashboard review, policy tuning |
+| 10 | Phase 4 | 25 | Human-tuned policies |
+
+### Post-Experiment (1 week)
+
+| Day | Activity |
+|-----|----------|
+| 1-2 | Human annotation of failure modes (100 failures) |
+| 3-4 | Statistical analysis |
+| 5 | Draft report |
+| 6-7 | Review, revise, publish |
+
+## Expected Results
+
+### Optimistic Scenario
+
+| Phase | Success Rate | Recurring Issues | Learning Application |
+|-------|--------------|------------------|---------------------|
+| 1 (Baseline) | 20% | 40% | N/A |
+| 2 (Retro) | 35% | 25% | 50% |
+| 3 (Meta) | 45% | 12% | 75% |
+| 4 (Human) | 52% | 8% | 85% |
+
+### Conservative Scenario
+
+| Phase | Success Rate | Recurring Issues | Learning Application |
+|-------|--------------|------------------|---------------------|
+| 1 (Baseline) | 18% | 42% | N/A |
+| 2 (Retro) | 24% | 35% | 30% |
+| 3 (Meta) | 30% | 25% | 50% |
+| 4 (Human) | 33% | 20% | 60% |
+
+### Null Scenario (System Doesn't Work)
+
+| Phase | Success Rate | Recurring Issues | Learning Application |
+|-------|--------------|------------------|---------------------|
+| All | ~20% | ~40% | <20% or not applied |
+
+If null scenario occurs, investigate:
+1. Are learnings being loaded into context?
+2. Are learnings actionable (specific enough)?
+3. Is context window sufficient to hold learnings?
+4. Is drift score detecting real drift?
+
+## Threats to Validity
+
+### Internal Validity
+
+| Threat | Mitigation |
+|--------|------------|
+| **Order effects** | Randomize task order within phases |
+| **Learning contamination** | Fresh repo clone per task |
+| **Annotator bias** | Blind annotation (annotator doesn't know phase) |
+| **Model drift** | Use fixed model version, temp=0 |
+
+### External Validity
+
+| Threat | Mitigation |
+|--------|------------|
+| **Task representativeness** | Use real GitHub issues (SWE-bench) |
+| **Model specificity** | Document model version; repeat with other models in future |
+| **Domain specificity** | Include multiple repos (Django, Flask, Pandas, etc.) |
+
+### Construct Validity
+
+| Threat | Mitigation |
+|--------|------------|
+| **Success metric validity** | Use test suite as ground truth (standard practice) |
+| **Learning application measurement** | Human audit with inter-rater reliability check |
+| **Drift score validity** | Validate against human judgment (correlation analysis) |
+
+## Deliverables
+
+1. **Raw data**: All task attempts, retrospections, meta-retrospections (anonymized)
+2. **Analysis scripts**: Python notebooks reproducing all analyses
+3. **Final report**:
+   - Executive summary (1 page)
+   - Detailed results by research question
+   - Failure mode analysis
+   - Recommendations for system improvement
+4. **Learnings database**: All extracted learnings with effectiveness ratings
+
+---
+
 ## Original References
 
 - Current learning extraction: `scripts/braintrust_analyze.py`
