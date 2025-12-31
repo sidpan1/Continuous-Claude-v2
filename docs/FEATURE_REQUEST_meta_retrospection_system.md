@@ -1191,11 +1191,12 @@ This section describes how to run the full experiment using only free, open-sour
 |-----------|----------|----------------------|
 | **Benchmarks** | SWE-bench Lite | ✅ Free (Hugging Face) |
 | **Tracing** | Braintrust ($) | Local SQLite + JSON logs |
-| **Annotations** | Human annotator ($) | LLM-as-judge (self-annotation) |
+| **Annotations** | Human annotator ($) | Agent-as-judge (Claude Code self-evaluates) |
+| **Judge LLM** | Separate API calls ($) | Agent-as-judge (same session) |
 | **Embeddings** | OpenAI/external ($) | Local sentence-transformers |
-| **Model** | Claude API ($) | Required* (see cost reduction) |
+| **Claude Code** | Required | ✅ Only cost (~$50-100 full, ~$15-30 minimal) |
 
-*Model costs are unavoidable but can be minimized.
+**Key architecture decision**: Claude Code performs ALL roles (worker, retrospector, meta-retrospector). No separate LLM calls.
 
 ## Alternative Architecture
 
@@ -1311,120 +1312,127 @@ class LocalTracer:
             }
 ```
 
-### 2. LLM-as-Judge (Replace Human Annotators)
+### 2. Agent-as-Judge (Claude Code Self-Evaluation)
 
-Use Claude to classify its own failures:
+**Key insight**: Claude Code itself performs retrospection and failure classification as part of its normal workflow. No separate LLM API calls needed.
 
-```python
-# src/meta/llm_judge.py
-
-from typing import Literal
-
-FAILURE_MODE_PROMPT = """
-Analyze this failed task attempt and classify the failure mode.
-
-## Task Description
-{task_description}
-
-## Agent's Final Output
-{agent_output}
-
-## Test Results
-{test_output}
-
-## Failure Modes (choose ONE):
-
-### Understanding
-- misread_requirements: Solved wrong problem
-- missed_edge_case: Didn't handle boundary condition
-- wrong_scope: Changed too much or too little
-
-### Implementation
-- syntax_error: Code doesn't parse
-- type_error: Type mismatch
-- logic_error: Code runs but wrong output
-- import_error: Missing or wrong imports
-
-### Environment
-- test_flakiness: Test passes/fails intermittently
-- setup_failure: Couldn't configure environment
-- timeout: Exceeded time limit
-
-### Process
-- premature_commit: Submitted before testing
-- incomplete_fix: Partial solution
-- regression: Fixed one thing, broke another
-
-Respond with ONLY the failure mode key (e.g., "logic_error").
-"""
-
-LEARNING_APPLICATION_PROMPT = """
-Did the agent apply any of these prior learnings in its solution?
-
-## Prior Learnings Available
-{learnings}
-
-## Agent's Solution
-{solution}
-
-For each learning, respond:
-- APPLIED: [learning_id] - [brief explanation of how it was applied]
-- NOT_APPLIED: No learnings were applied
-
-Be conservative - only mark as APPLIED if there's clear evidence.
-"""
-
-async def classify_failure(
-    task_description: str,
-    agent_output: str,
-    test_output: str,
-    client  # Claude client
-) -> str:
-    """Classify failure mode using LLM-as-judge."""
-    response = await client.messages.create(
-        model="claude-sonnet-4-20250514",  # Cheaper model for classification
-        max_tokens=50,
-        temperature=0,
-        messages=[{
-            "role": "user",
-            "content": FAILURE_MODE_PROMPT.format(
-                task_description=task_description,
-                agent_output=agent_output,
-                test_output=test_output
-            )
-        }]
-    )
-    return response.content[0].text.strip()
-
-async def check_learning_application(
-    learnings: list[dict],
-    solution: str,
-    client
-) -> dict:
-    """Check if prior learnings were applied using LLM-as-judge."""
-    learnings_text = "\n".join([
-        f"[{l['id']}] {l['insight']}" for l in learnings
-    ])
-    response = await client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=200,
-        temperature=0,
-        messages=[{
-            "role": "user",
-            "content": LEARNING_APPLICATION_PROMPT.format(
-                learnings=learnings_text,
-                solution=solution
-            )
-        }]
-    )
-    text = response.content[0].text
-    if "APPLIED:" in text:
-        # Parse learning ID
-        import re
-        match = re.search(r'APPLIED: \[([^\]]+)\]', text)
-        return {'applied': True, 'learning_id': match.group(1) if match else None}
-    return {'applied': False, 'learning_id': None}
 ```
+┌─────────────────────────────────────────────────────────────────┐
+│  SINGLE CLAUDE CODE SESSION                                      │
+│                                                                   │
+│  1. Worker phase:     Execute SWE-bench task                     │
+│  2. Test phase:       Run tests, observe outcome                 │
+│  3. Retrospect phase: Analyze own work, classify failure         │
+│  4. Output phase:     Write structured JSON to cache             │
+│                                                                   │
+│  All in ONE session = ONE LLM cost                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Implementation via `/retrospect` skill**:
+
+The retrospection skill guides Claude Code to self-evaluate at end of task:
+
+```markdown
+# .claude/skills/retrospect/SKILL.md
+---
+description: Analyze current session, classify outcome, extract learnings
+---
+
+# Retrospect
+
+After completing a task, analyze your own work.
+
+## Process
+
+1. **Review outcome**: Did tests pass? What was the result?
+
+2. **Classify failure** (if failed):
+   Choose ONE from:
+   - understanding/misread_requirements
+   - understanding/missed_edge_case
+   - understanding/wrong_scope
+   - implementation/syntax_error
+   - implementation/type_error
+   - implementation/logic_error
+   - implementation/import_error
+   - environment/test_flakiness
+   - environment/setup_failure
+   - environment/timeout
+   - process/premature_commit
+   - process/incomplete_fix
+   - process/regression
+
+3. **Check learning application**:
+   Review learnings loaded at session start.
+   Did you apply any? Which one helped?
+
+4. **Extract new learnings**:
+   What would help next time?
+   Be specific and actionable.
+
+5. **Write output**:
+   Save to `.claude/cache/retrospections/<session>.json`
+
+## Output Format
+
+```json
+{
+  "session_id": "<from context>",
+  "task_id": "<SWE-bench issue ID>",
+  "timestamp": "<ISO format>",
+  "outcome": "success | partial | failure",
+  "failure_mode": "<category/type if failed>",
+  "learnings_applied": ["<learning_id>", ...],
+  "new_learnings": [
+    {
+      "id": "<generated UUID>",
+      "category": "<understanding|implementation|process>",
+      "insight": "<specific, actionable lesson>",
+      "confidence": 0.8
+    }
+  ],
+  "reasoning": "<brief explanation of what happened>"
+}
+```
+```
+
+**Why this works**:
+
+1. **Same context**: Claude Code already has full context of the task it just completed
+2. **No API overhead**: Retrospection is part of the same conversation, not a separate call
+3. **Better accuracy**: Self-evaluation with full context beats external classification
+4. **Natural workflow**: Fits the existing skill/hook pattern
+
+**Experiment workflow**:
+
+```
+For each SWE-bench task:
+  1. Load prior learnings into context (SessionStart hook)
+  2. Present task: "Fix GitHub issue: <description>"
+  3. Claude Code works on solution
+  4. Run tests (Bash tool)
+  5. Trigger: "/retrospect" or SessionEnd hook
+  6. Claude Code self-evaluates and writes JSON
+  7. LocalTracer records session metadata
+```
+
+**Cost comparison**:
+
+| Approach | LLM Calls per Task | Relative Cost |
+|----------|-------------------|---------------|
+| Separate judge API | 2 (worker + judge) | 1.5-2x |
+| Agent-as-judge (same session) | 1 (worker includes retrospection) | 1x |
+
+**Self-evaluation prompts embedded in skill**:
+
+The `/retrospect` skill contains the evaluation criteria, so Claude Code uses its own context to answer:
+- "Did I solve the right problem?" → misread_requirements check
+- "Did I handle edge cases?" → missed_edge_case check
+- "Did tests reveal type issues?" → type_error check
+- etc.
+
+No external prompting needed—the skill guides self-analysis.
 
 ### 3. Local Embeddings (Replace OpenAI)
 
@@ -1587,14 +1595,16 @@ if __name__ == "__main__":
 - Opus worker: ~$150-300 (depending on attempts)
 - Braintrust: ~$50/month
 - Human annotation: ~$200 (100 samples @ $2/each)
-- **Total: ~$400-550**
+- Separate judge LLM: ~$50
+- **Total: ~$450-600**
 
-**Zero-External-Dependencies Design:**
-- Sonnet worker: ~$30-60
+**Claude Code Only Design (Agent-as-Judge):**
+- Claude Code (worker + self-retrospection): ~$50-100
 - Local tracing: $0
-- LLM-as-judge (Haiku): ~$5
 - Local embeddings: $0
-- **Total: ~$35-65** (85% reduction)
+- **Total: ~$50-100** (80-85% reduction)
+
+The key insight: retrospection happens within the same Claude Code session that did the work. No separate API calls for judging.
 
 ### Minimal Viable Experiment
 
@@ -1605,11 +1615,11 @@ Phases: 3 (skip human tuning phase initially)
 Tasks per phase: 15 (instead of 50)
 Total tasks: 45
 
-Model: Claude Sonnet for worker, Haiku for judge
+Model: Claude Code (single agent for work + retrospection)
 Embeddings: Local (sentence-transformers)
 Tracing: Local SQLite
 
-Estimated cost: ~$15-25
+Estimated cost: ~$15-30 (just Claude Code API)
 ```
 
 ## Implementation: Zero-Dependency Experiment Runner
@@ -1734,15 +1744,29 @@ dependencies = [
 |-----------|--------|-------|
 | SWE-bench dataset | ✅ Free | Open source on Hugging Face |
 | Local tracing | ✅ Free | SQLite (existing infrastructure) |
-| LLM-as-judge | ✅ Free* | Uses same Claude API as worker |
+| Agent-as-judge | ✅ Free | Same Claude Code session does retrospection |
 | Local embeddings | ✅ Free | sentence-transformers (MIT license) |
 | Statistical analysis | ✅ Free | scipy, pandas (existing) |
 | Braintrust | ❌ Removed | Replaced with local tracer |
-| Human annotators | ❌ Removed | Replaced with LLM-as-judge |
+| Human annotators | ❌ Removed | Claude Code self-evaluates |
+| Separate judge LLM | ❌ Removed | Agent-as-judge pattern |
 | External embedding APIs | ❌ Removed | Replaced with local embeddings |
-| **Claude API** | 💰 Required | ~$35-65 for full experiment |
+| **Claude Code** | 💰 Only Cost | ~$50-100 full experiment, ~$15-30 minimal |
 
-*LLM-as-judge uses the same API calls, so it's "free" in the sense of no additional service costs.
+**Single LLM Architecture**: Claude Code is the only LLM. It does the work AND retrospects on its own work within the same session. This eliminates all additional API costs.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  CLAUDE CODE = WORKER + RETROSPECTOR + META-RETROSPECTOR │
+│                                                           │
+│  Session 1: Task → Work → /retrospect → JSON             │
+│  Session 2: Task → Work → /retrospect → JSON             │
+│  ...                                                      │
+│  Session 5: → /meta-retrospect (analyze retrospections)  │
+│                                                           │
+│  All sessions use the SAME Claude Code instance          │
+└──────────────────────────────────────────────────────────┘
+```
 
 ---
 
