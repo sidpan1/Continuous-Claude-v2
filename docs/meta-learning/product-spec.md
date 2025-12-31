@@ -1,314 +1,584 @@
-# Meta-Learning System: Product Specification
+# Collaborative Self-Improving AI: Product Specification
 
 ## Vision
 
-**A coding assistant that gets better every session—not through magic, but through structured reflection and human guidance.**
+**An AI coding assistant that learns from every interaction, improves itself over time, and collaborates with humans at every level of that improvement.**
 
-Today, each Claude Code session starts fresh. The same mistakes repeat. Learnings exist as scattered notes that nobody reads. Humans spend hours debugging outputs instead of building.
-
-Tomorrow: Claude reflects on what worked and what didn't. Patterns surface automatically. Humans guide alignment with minimal effort. The system compounds knowledge over time.
-
----
-
-## Users
-
-### Primary: The Developer
-
-A software engineer using Claude Code daily. They want Claude to:
-- Stop making the same mistakes
-- Apply lessons from past sessions
-- Surface insights they wouldn't notice
-- Require minimal overhead to improve
-
-**Key frustration:** "I feel like I'm training Claude from scratch every session."
-
-### Secondary: The Team Lead
-
-Oversees multiple developers using Claude Code. They want:
-- Visibility into what Claude is learning
-- Confidence that Claude aligns with team practices
-- Ability to encode team knowledge into the system
-
-**Key frustration:** "Each team member teaches Claude different things. There's no shared learning."
+This isn't just a tool that remembers things. It's a system that:
+- Reflects on its own work
+- Detects patterns across sessions
+- Proposes improvements to itself
+- Learns how to learn better
+- Keeps humans in control of alignment at every layer
 
 ---
 
-## Core Principles
+## The Core Insight
 
-### 1. Humans Align, System Executes
+Learning happens at multiple levels, and each level can improve the levels below:
 
-Humans shouldn't fix individual outputs. That's low leverage. Instead:
-- Humans define what "good" looks like
-- System identifies patterns
-- Humans approve what becomes permanent
-- System applies learnings going forward
+```
+Work → produces → Retrospection
+Retrospection → reveals → Patterns
+Patterns → become → Rules/Skills
+Rules/Skills → improve → Work
+Meta-analysis → improves → The learning process itself
+```
 
-### 2. Reflection Over Surveillance
+This creates a **recursive improvement loop** where the system doesn't just get better at coding—it gets better at getting better.
 
-We don't record everything and analyze it externally. Instead:
-- Claude reflects on its own work while context is fresh
-- Self-assessment captures nuance that logs miss
-- Human feedback calibrates over time
+---
 
-### 3. Batch Over Stream
+## System Overview
 
-Per-session analysis is noisy. Individual sessions vary. Instead:
-- Retrospections accumulate
-- Meta-analysis finds patterns across sessions
-- Statistical smoothing separates signal from noise
+### The Learning Stack
 
-### 4. Progressive Disclosure
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  LAYER 4: META-META                                              │
+│  "Is our learning process effective?"                            │
+│  Human role: Approve changes to how system learns                │
+├─────────────────────────────────────────────────────────────────┤
+│  LAYER 3: META-RETROSPECTION                                     │
+│  "What patterns appear across sessions?"                         │
+│  Human role: Approve rules/skills, correct drift                 │
+├─────────────────────────────────────────────────────────────────┤
+│  LAYER 2: RETROSPECTION                                          │
+│  "What worked and failed this session?"                          │
+│  Human role: Confirm outcomes, provide context                   │
+├─────────────────────────────────────────────────────────────────┤
+│  LAYER 1: WORK                                                   │
+│  "Execute tasks, write code"                                     │
+│  Human role: Provide tasks, review output                        │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-Don't overwhelm users with data. Instead:
-- Default: System runs quietly
-- Alert: Only when thresholds exceeded
-- Deep dive: Available on demand
+### Operating Modes
+
+| Mode | Description | Learning Behavior |
+|------|-------------|-------------------|
+| **Synchronous** | Human present, real-time collaboration | Reflection at session end |
+| **Asynchronous** | AI works autonomously toward objective | Reflection at checkpoints + end |
+
+### Work Organization
+
+```
+Epic (large initiative)
+├── Story (1-4 hour chunk, right-sized for async)
+│   ├── Task (15-60 min, atomic unit)
+│   ├── Task
+│   └── Task
+├── Story
+└── Bug (can appear at any level)
+```
+
+Issues are both **work containers** and **learning artifacts**.
 
 ---
 
 ## User Journeys
 
-### Journey 1: First-Time Setup
+### Part 1: Setup Journeys
 
-**Goal:** Configure the system to understand what success looks like.
+#### Journey 1.1: Repository Onboarding
 
-**Duration:** 15-30 minutes, once per project
+**Goal:** System learns the project; human validates understanding.
 
-#### Scene
+**The Problem:** Asking users "what are your values?" is too abstract. They don't know what to say without context.
 
-Dev opens a new project. They've heard the meta-learning system can help Claude improve over time. They want to set it up.
-
-#### Flow
+**The Solution:** Observe first, confirm later.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                  │
-│  Dev: "Help me set up learning for this project"                 │
+│  Dev: "Set up learning for this project"                        │
 │                                                                  │
-│  Claude: "I'll help you create an intent file. This tells me    │
-│  what success looks like for your project.                       │
+│  Claude: "Analyzing your repository..."                         │
 │                                                                  │
-│  Let's start with a few questions:                               │
+│  [30 seconds later]                                              │
 │                                                                  │
-│  1. What matters most in this codebase?                          │
-│     □ Correctness (tests pass, no bugs)                          │
-│     □ Performance (fast, efficient)                              │
-│     □ Maintainability (readable, documented)                     │
-│     □ Velocity (ship quickly)                                    │
+│  Claude: "Here's what I learned about your project:             │
 │                                                                  │
-│  Dev: "Correctness first, then maintainability"                  │
+│  **Codebase Signals**                                            │
+│  • TypeScript strict mode enabled                               │
+│  • 78% test coverage                                            │
+│  • ESLint with 47 rules active                                  │
+│  • Husky pre-commit hooks                                       │
+│  • PR template requires checklist                               │
 │                                                                  │
-│  Claude: "Got it. What should I explicitly NOT optimize for?"    │
+│  **From Your Docs**                                              │
+│  • CONTRIBUTING.md: 'All changes must have tests'               │
+│  • README: 'Production-ready code only'                         │
 │                                                                  │
-│  Dev: "Don't sacrifice correctness for speed. We're not in a    │
-│        rush, we need it right."                                  │
+│  **My Inference**                                                │
+│  You prioritize: Correctness > Speed, Consistency > Flexibility │
 │                                                                  │
-│  Claude: "When should I alert you about learning health?"        │
+│  Does this sound right?                                          │
 │                                                                  │
-│  Dev: "If I keep making the same mistake 3+ times, tell me.      │
-│        Otherwise, just learn quietly."                           │
+│  [Yes, that's us] [Mostly, but...] [Let me explain]"            │
 │                                                                  │
-│  Claude: "Created .claude/intent.yaml with your preferences.     │
-│  I'll start learning from our sessions. You can check progress   │
-│  anytime with /dashboard."                                       │
+│  Dev: "Mostly, but we also care about performance—we've had     │
+│        incidents from slow queries."                             │
+│                                                                  │
+│  Claude: "Added 'query performance' to priorities.              │
+│  Created .claude/intent.yaml based on this conversation."       │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Outcome
-
-- Intent file created with goals and thresholds
-- System knows what to optimize for
-- Dev feels setup was quick and painless
-
-#### What Dev DOESN'T Have To Do
-
-- Write YAML manually
-- Understand the underlying system
-- Configure every threshold
-- Read documentation first
+**Key principle:** System does the analysis; human just confirms or corrects.
 
 ---
 
-### Journey 2: Regular Work Session
+#### Journey 1.2: Setting an Autonomous Objective
 
-**Goal:** Do normal work. System learns in background.
-
-**Duration:** Normal session length. Zero overhead.
-
-#### Scene
-
-Dev works on a feature. They use Claude for coding, debugging, refactoring. The session has ups and downs—some approaches work, others don't.
-
-#### Flow
+**Goal:** Define what "done" looks like and constraints for unattended work.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                  │
-│  [Normal work session - 45 minutes]                              │
+│  Dev: "I need you to work on caching overnight while I sleep."  │
 │                                                                  │
-│  Dev: "Add user authentication to the API"                       │
-│  Claude: [implements feature]                                    │
+│  Claude: "I can work autonomously. Let me confirm the scope:    │
 │                                                                  │
-│  Dev: "Tests are failing"                                        │
-│  Claude: [debugs, tries approach A - doesn't work]               │
+│  **Objective**                                                   │
+│  Add caching to API endpoints                                    │
+│                                                                  │
+│  **I'll pause and ask if:**                                      │
+│  • Architectural decisions needed                               │
+│  • Same approach fails 3 times                                  │
+│  • Security concerns found                                      │
+│  • Scope exceeds 500 lines                                      │
+│                                                                  │
+│  **I'll keep going if:**                                         │
+│  • Minor blockers I can solve                                   │
+│  • Tests pass                                                   │
+│  • Within scope                                                 │
+│                                                                  │
+│  **Time limit:** 4 hours                                         │
+│                                                                  │
+│  **Learning behavior:**                                          │
+│  • Checkpoint reflection every 30 minutes                       │
+│  • Full retrospection at end                                    │
+│  • Learnings applied to subsequent tasks                        │
+│                                                                  │
+│  Any other constraints?"                                         │
+│                                                                  │
+│  Dev: "Use existing Redis. Don't touch auth endpoints."          │
+│                                                                  │
+│  Claude: "Got it. Starting autonomous work now."                │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Part 2: Synchronous Journeys (Human-in-Loop)
+
+#### Journey 2.1: Regular Work Session
+
+**Goal:** Normal coding with learning happening invisibly.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  [Normal 45-minute coding session]                               │
+│                                                                  │
+│  Dev: "Add user authentication"                                  │
+│  Claude: [implements]                                            │
+│                                                                  │
+│  Dev: "Tests failing"                                            │
+│  Claude: [tries approach A - fails]                              │
 │  Claude: [tries approach B - works]                              │
 │                                                                  │
-│  Dev: "Great, let's also add rate limiting"                      │
-│  Claude: [implements rate limiting]                              │
+│  Dev: "Great, also add rate limiting"                            │
+│  Claude: [implements]                                            │
 │                                                                  │
 │  [Session ending]                                                │
 │                                                                  │
-│  Claude: "Before we wrap up, I'd like to capture what we         │
-│  learned. Takes 30 seconds. Want me to?"                         │
+│  Claude: "Before we wrap up, quick reflection? (30 sec)"        │
 │                                                                  │
 │  Dev: "Sure"                                                     │
 │                                                                  │
-│  [Claude reflects - see Journey 3]                               │
-│                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Outcome
-
-- Work completed normally
-- Prompt to reflect is gentle, skippable
-- No friction during actual work
-
-#### What Dev DOESN'T Have To Do
-
-- Manually log what worked/failed
-- Remember to capture learnings
-- Change their workflow
+**Key principle:** Zero friction during work. Learning is invisible until natural breakpoints.
 
 ---
 
-### Journey 3: End-of-Session Reflection
+#### Journey 2.2: End-of-Session Reflection
 
-**Goal:** Capture what worked and what didn't while context is fresh.
-
-**Duration:** 30-60 seconds
-
-#### Scene
-
-Session is ending. Claude offers to reflect. Dev says yes.
-
-#### Flow
+**Goal:** Capture learnings while context is fresh.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                  │
-│  Claude: "Reflecting on our session...                           │
+│  Claude: "Reflecting on our session...                          │
 │                                                                  │
-│  **What we accomplished:**                                       │
-│  - Added JWT authentication to /api/auth endpoints               │
-│  - Added rate limiting middleware                                │
+│  **What we built:**                                              │
+│  • JWT authentication for /api/auth                             │
+│  • Rate limiting middleware                                     │
 │                                                                  │
-│  **What worked well:**                                           │
-│  - Using existing middleware pattern from /api/logging           │
-│  - Testing auth flow with curl before writing unit tests         │
+│  **What worked:**                                                │
+│  • Using existing middleware pattern from /api/logging          │
+│  • Testing with curl before writing unit tests                  │
 │                                                                  │
 │  **What we had to retry:**                                       │
-│  - First tried session-based auth (wrong for API)                │
-│  - Initially missed token expiration handling                    │
+│  • First tried session-based auth (wrong for API)               │
 │                                                                  │
 │  **Pattern I noticed:**                                          │
-│  'Check existing codebase patterns before implementing new       │
-│   features' - this saved time with rate limiting.                │
+│  'Check existing patterns before implementing new features'     │
 │                                                                  │
-│  Quick feedback: Did this session achieve your goal?             │
+│  Did this session achieve your goal?                             │
 │  [Yes] [Partially] [No] [Skip]"                                  │
 │                                                                  │
-│  Dev: [clicks Yes]                                               │
+│  Dev: [Yes]                                                      │
 │                                                                  │
-│  Claude: "Thanks! Retrospection saved. I'll apply these          │
-│  learnings in future sessions."                                  │
+│  Claude: "Retrospection saved. This will inform future work."   │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Outcome
-
-- Learnings captured in structured format
-- Dev's feedback calibrates self-assessment
-- Takes seconds, not minutes
-
-#### What Dev DOESN'T Have To Do
-
-- Write up what happened
-- Categorize learnings
-- Decide what's important to remember
-
 ---
 
-### Journey 4: Receiving an Alert
+### Part 3: Asynchronous Journeys (Autonomous Mode)
 
-**Goal:** Respond to a pattern the system detected.
+#### Journey 3.1: Monitoring Progress
 
-**Duration:** 2-5 minutes
-
-#### Scene
-
-Dev starts a new session. System has detected a recurring issue.
-
-#### Flow
+**Goal:** Check on autonomous work without interrupting.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                  │
-│  Claude: "Before we start, I noticed something across our        │
-│  recent sessions that might be worth addressing.                 │
+│  [Dev checks phone]                                              │
 │                                                                  │
-│  **Recurring Issue Detected**                                    │
+│  Claude: "🟢 Autonomous work in progress                         │
 │                                                                  │
-│  'Forgetting to run tests before committing'                     │
-│  This has come up in 4 of your last 10 sessions.                 │
+│  **Status:** 2.5 hours in, ~60% complete                        │
 │                                                                  │
-│  Recent examples:                                                │
-│  - Jan 10: 'Pushed, CI failed, had to fix'                       │
-│  - Jan 12: 'Same thing, tests would have caught it'              │
-│  - Jan 14: 'Forgot again, wasted 20 min on CI feedback loop'     │
+│  **Done:**                                                       │
+│  ✓ GET /products - cached                                       │
+│  ✓ GET /products/:id - cached                                   │
+│  ✓ GET /orders - cached                                         │
 │                                                                  │
-│  **Suggestion:** Create a rule that reminds me to run tests      │
-│  before any commit.                                              │
+│  **In progress:**                                                │
+│  → Cache invalidation logic                                     │
 │                                                                  │
-│  [Create Rule] [Dismiss] [Remind Me Later]"                      │
+│  **Learnings so far:**                                           │
+│  • This codebase prefers explicit cache keys                    │
+│  • 5-min TTL works well for read-heavy endpoints                │
 │                                                                  │
-│  Dev: [clicks Create Rule]                                       │
+│  No blockers. Continuing."                                       │
 │                                                                  │
-│  Claude: "Rule created. I'll now remind you to run tests         │
-│  before commits. You can adjust this in .claude/rules/           │
-│  if needed."                                                     │
+│  Dev: [closes phone]                                             │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Outcome
+---
 
-- Issue surfaced with evidence
-- One-click resolution
-- Dev didn't have to notice the pattern themselves
+#### Journey 3.2: Self-Correction Mid-Session
 
-#### What Dev DOESN'T Have To Do
+**Goal:** System catches its own drift without human intervention.
 
-- Review all past sessions
-- Notice the pattern manually
-- Write the rule from scratch
-- Figure out where rules go
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  [Async session, internal log]                                   │
+│                                                                  │
+│  Claude (2-hour checkpoint reflection):                          │
+│                                                                  │
+│  "**Self-check:**                                                │
+│                                                                  │
+│  Objective: Add caching to API endpoints                        │
+│  Current focus: Optimizing Redis connection pooling             │
+│                                                                  │
+│  ⚠️ **Drift detected**                                          │
+│                                                                  │
+│  I've spent 40 minutes on connection pooling.                   │
+│  This is scope creep—pooling works fine already.                │
+│                                                                  │
+│  Intent file says: 'Don't over-engineer'                        │
+│                                                                  │
+│  **Self-correction:**                                            │
+│  Reverting pooling changes. Returning to endpoint caching.      │
+│  Noting 'pooling optimization' for future backlog."             │
+│                                                                  │
+│  [Continues on original objective]                               │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key principle:** Intent file is the guardrail when humans aren't present.
 
 ---
 
-### Journey 5: Weekly Health Check
+#### Journey 3.3: Escalation
 
-**Goal:** Quick overview of learning system health.
+**Goal:** System pauses for human input when needed.
 
-**Duration:** 2-3 minutes, weekly
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Claude: "🟡 Need your input                                     │
+│                                                                  │
+│  I've paused because I hit a decision point:                     │
+│                                                                  │
+│  The /reports/sales endpoint has complex cache invalidation.    │
+│                                                                  │
+│  **Options:**                                                    │
+│  [A] 5-min TTL (simple, may be stale)                           │
+│  [B] Event-driven invalidation (complex, always fresh)          │
+│  [C] Skip this endpoint                                          │
+│                                                                  │
+│  What would you prefer?"                                         │
+│                                                                  │
+│  Dev: "A - staleness is fine for reports"                        │
+│                                                                  │
+│  Claude: "Got it. Resuming.                                      │
+│                                                                  │
+│  **Learning noted:** 'For reporting endpoints, prefer           │
+│  TTL-based caching over event-driven.'                           │
+│                                                                  │
+│  I'll apply this to similar decisions."                          │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-#### Scene
+**Key principle:** Human decisions become learnings for future autonomy.
 
-Dev wants to see if the learning system is working. They run the dashboard.
+---
 
-#### Flow
+#### Journey 3.4: Autonomous Completion
+
+**Goal:** Review results and learnings from autonomous work.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Claude: "✅ Autonomous work complete                            │
+│                                                                  │
+│  **Summary:**                                                    │
+│  Added Redis caching to 11 API endpoints.                        │
+│  Response time: 340ms → 45ms (87% improvement)                  │
+│                                                                  │
+│  **Deliverables:**                                               │
+│  • PR #47 ready for review                                      │
+│  • 31 new tests (all passing)                                   │
+│                                                                  │
+│  **Decisions made:**                                             │
+│  • 5-min TTL for reports (per your guidance)                    │
+│  • Skipped /inventory (flagged for later)                       │
+│                                                                  │
+│  **What I learned:**                                             │
+│  • This codebase prefers explicit cache keys                    │
+│  • Batch invalidation > per-item invalidation                   │
+│  • TTL works well for read-heavy, event-driven for writes       │
+│                                                                  │
+│  **Retrospection saved.** These learnings will improve          │
+│  future caching work.                                            │
+│                                                                  │
+│  [Review PR] [Start next task] [See full retrospection]"        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Part 4: Delegation Journeys
+
+#### Journey 4.1: Sync → Async Delegation
+
+**Goal:** Hand off mid-session work to run autonomously.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Dev: "This refactoring is bigger than I thought. Can you       │
+│        continue in background while I'm in meetings?"            │
+│                                                                  │
+│  Claude: "I'll create an issue to track this:                   │
+│                                                                  │
+│  **Issue #52: Refactor UserService to repository pattern**      │
+│                                                                  │
+│  **Current state:**                                              │
+│  ✓ Created UserRepository interface                             │
+│  ✓ Migrated findById, findByEmail                              │
+│  → In progress: create, update methods                          │
+│  ○ Pending: delete, bulk operations                            │
+│  ○ Pending: Update 12 call sites                               │
+│                                                                  │
+│  **Decisions already made:**                                     │
+│  • Repository returns domain objects, not Prisma types         │
+│                                                                  │
+│  **Constraints:**                                                │
+│  • Don't modify auth endpoints                                  │
+│                                                                  │
+│  Create issue and start async work?                              │
+│  [Create & Start] [Create Only] [Continue Sync]"                │
+│                                                                  │
+│  Dev: [Create & Start]                                           │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key principle:** Issues carry full context across session boundaries.
+
+---
+
+#### Journey 4.2: Work Decomposition
+
+**Goal:** Break large work into right-sized pieces.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  [Async session discovers scope is larger than expected]         │
+│                                                                  │
+│  Claude: "🟡 Scope adjustment                                    │
+│                                                                  │
+│  The caching work is larger than expected (23 endpoints).       │
+│  I've broken it into manageable pieces:                          │
+│                                                                  │
+│  **Epic #52: Add caching to API**                                │
+│  ├── Story #53: Cache user endpoints (3) ← Doing now            │
+│  ├── Story #54: Cache product endpoints (5)                     │
+│  ├── Story #55: Cache order endpoints (4)                       │
+│  ├── Story #56: Cache reporting endpoints (7)                   │
+│  └── Story #57: Cache admin endpoints (4)                       │
+│                                                                  │
+│  Each story has tasks:                                           │
+│  Story #53 tasks:                                                │
+│  ├── Task: Analyze user endpoints                               │
+│  ├── Task: Cache GET /users                                     │
+│  ├── Task: Cache GET /users/:id                                 │
+│  ├── Task: Cache GET /users/me                                  │
+│  ├── Task: Add invalidation logic                               │
+│  └── Task: Write tests                                          │
+│                                                                  │
+│  I'll finish #53 this session. Others ready for future."        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Journey 4.3: Picking Up from Backlog
+
+**Goal:** Resume work from issue queue.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Dev: "What should we work on?"                                  │
+│                                                                  │
+│  Claude: "Checking backlog...                                    │
+│                                                                  │
+│  🔴 **High Priority:**                                           │
+│  • #58: Fix payment timeout bug                                 │
+│    └─ P0, reported 2 hours ago                                  │
+│                                                                  │
+│  🟡 **In Progress (from previous sessions):**                    │
+│  • #54: Cache product endpoints                                 │
+│    └─ 2/5 tasks complete, ready to continue                     │
+│                                                                  │
+│  🟢 **Ready to Start:**                                          │
+│  • #55: Cache order endpoints                                   │
+│  • #61: Add input validation                                    │
+│                                                                  │
+│  **Recommended:** Fix #58 first (production impact).            │
+│                                                                  │
+│  Which would you like to tackle?"                                │
+│                                                                  │
+│  Dev: "Fix the payment bug"                                      │
+│                                                                  │
+│  Claude: "Opening #58. Reading context...                       │
+│  I see the error logs. Let me investigate."                     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Part 5: Learning Journeys
+
+#### Journey 5.1: Receiving a Pattern Alert
+
+**Goal:** System surfaces recurring issue for human decision.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Claude: "I noticed something across recent sessions:           │
+│                                                                  │
+│  **Recurring Pattern Detected**                                  │
+│                                                                  │
+│  'Forgetting to run tests before commit'                        │
+│  Appeared in 4 of last 10 sessions.                             │
+│                                                                  │
+│  **Evidence:**                                                   │
+│  • Jan 10: CI failed after push                                 │
+│  • Jan 12: Same issue                                           │
+│  • Jan 14: Tests would have caught bug                          │
+│  • Jan 15: 'I keep doing this'                                  │
+│                                                                  │
+│  **Suggestion:** Create a rule to remind about tests            │
+│  before commits.                                                 │
+│                                                                  │
+│  [Create Rule] [Dismiss] [Remind Later]"                        │
+│                                                                  │
+│  Dev: [Create Rule]                                              │
+│                                                                  │
+│  Claude: "Rule created. I'll remind you about tests             │
+│  before commits going forward."                                  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Journey 5.2: Alignment Correction
+
+**Goal:** Redirect when system is learning wrong lessons.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Claude: "**Alignment Alert**                                    │
+│                                                                  │
+│  I've noticed my recent learnings might be drifting:            │
+│                                                                  │
+│  Your intent says: 'Correctness first'                          │
+│                                                                  │
+│  But my recent learnings focus on:                               │
+│  • 'Reduce token usage' (6 mentions)                            │
+│  • 'Faster completion' (4 mentions)                             │
+│  • 'Correctness/testing' (1 mention)                            │
+│                                                                  │
+│  This could mean:                                                │
+│  1. Recent work was legitimately efficiency-focused             │
+│  2. I'm optimizing for the wrong thing                          │
+│                                                                  │
+│  What should I do?                                               │
+│                                                                  │
+│  [A] Update my goals - efficiency matters now                   │
+│  [B] This is drift - refocus on correctness                     │
+│  [C] Let me explain the context"                                │
+│                                                                  │
+│  Dev: "B - we had a crunch but it's over. Back to quality."     │
+│                                                                  │
+│  Claude: "Understood. Reweighting toward correctness.           │
+│  Recent efficiency learnings marked as context-specific."       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Journey 5.3: Weekly Health Check
+
+**Goal:** Quick overview of learning system effectiveness.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -317,219 +587,156 @@ Dev wants to see if the learning system is working. They run the dashboard.
 │                                                                  │
 │  Claude: "                                                       │
 │  ╔═══════════════════════════════════════════════════════════╗  │
-│  ║           LEARNING HEALTH  •  Jan 8-15                    ║  │
+│  ║          LEARNING HEALTH  •  Jan 8-15                     ║  │
 │  ╠═══════════════════════════════════════════════════════════╣  │
 │  ║                                                           ║  │
-│  ║   Sessions: 12        Success Rate: 75% ↑                 ║  │
+│  ║  Sessions: 12       Success Rate: 75% ↑                   ║  │
 │  ║                                                           ║  │
-│  ║   ████████████████████░░░░░░  Succeeded (9)               ║  │
-│  ║   ████░░░░░░░░░░░░░░░░░░░░░░  Partial (3)                 ║  │
-│  ║   ░░░░░░░░░░░░░░░░░░░░░░░░░░  Failed (0)                  ║  │
+│  ║  ████████████████░░░░░░░░  Succeeded (9)                  ║  │
+│  ║  ████░░░░░░░░░░░░░░░░░░░░  Partial (3)                    ║  │
 │  ║                                                           ║  │
-│  ║   Recurring Issues: 1 (down from 3 last week)             ║  │
-│  ║   Alignment: 92% (well aligned with your goals)           ║  │
+│  ║  Recurring Issues: 1 (down from 3)                        ║  │
+│  ║  Alignment: 92%                                           ║  │
+│  ║  Learning Application: 68%                                ║  │
 │  ║                                                           ║  │
-│  ║   ✓ System is healthy. No action needed.                  ║  │
+│  ║  ✓ System is healthy                                      ║  │
 │  ║                                                           ║  │
 │  ╠═══════════════════════════════════════════════════════════╣  │
-│  ║   Top Insight This Week:                                  ║  │
-│  ║   'Running tests before commit' rule applied 8 times,     ║  │
-│  ║   prevented 3 potential CI failures.                      ║  │
+│  ║  Top insight: 'Run tests before commit' rule              ║  │
+│  ║  applied 8 times, prevented 3 CI failures.                ║  │
 │  ╚═══════════════════════════════════════════════════════════╝  │
 │  "                                                               │
 │                                                                  │
-│  Dev: "Nice, it's working."                                      │
-│                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Outcome
-
-- Quick visual summary
-- Clear health indicator
-- Highlights value delivered
-- No action needed if healthy
-
-#### What Dev DOESN'T Have To Do
-
-- Read through retrospections
-- Calculate metrics manually
-- Dig into details unless curious
-
 ---
 
-### Journey 6: Alignment Correction
+#### Journey 5.4: Meta-Learning Review
 
-**Goal:** Redirect the system when it's learning the wrong lessons.
-
-**Duration:** 5-10 minutes
-
-#### Scene
-
-Dev notices Claude is optimizing for the wrong thing. Maybe it's focused on token efficiency when correctness matters more.
-
-#### Flow
+**Goal:** Evaluate and tune how the system learns.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                  │
-│  Claude: "**Alignment Alert**                                    │
+│  Dev: "How well is the learning system working?"                │
 │                                                                  │
-│  I've noticed my recent learnings might be drifting from         │
-│  your stated goals.                                              │
+│  Claude: "Here's my meta-analysis:                              │
 │                                                                  │
-│  Your intent says: 'Correctness first'                           │
+│  **Learning Effectiveness**                                      │
 │                                                                  │
-│  But my recent learnings focus on:                               │
-│  - 'Reduce token usage' (mentioned 6 times)                      │
-│  - 'Faster completion' (mentioned 4 times)                       │
-│  - 'Correctness/testing' (mentioned 1 time)                      │
+│  Rules created: 8                                                │
+│  Rules that improved outcomes: 5 (62%)                          │
+│  Rules with no measurable impact: 2 (25%)                       │
+│  Rules that may have hurt: 1 (12%)                              │
 │                                                                  │
-│  This could mean:                                                │
-│  1. Recent sessions were legitimately token-constrained          │
-│  2. I'm optimizing for the wrong thing                           │
+│  **Retrospection Quality**                                       │
 │                                                                  │
-│  What should I do?                                               │
+│  Sync session retrospections: Detailed, actionable              │
+│  Async session retrospections: Often too brief                  │
 │                                                                  │
-│  [A] This is fine - efficiency matters now, update my goals      │
-│  [B] This is drift - refocus on correctness                      │
-│  [C] Let me explain the context..."                              │
+│  **Pattern Detection**                                           │
 │                                                                  │
-│  Dev: "B - we had a crunch but we're past it. Back to quality."  │
+│  Patterns surfaced: 12                                          │
+│  Patterns you approved: 8 (67%)                                 │
+│  Patterns you rejected: 4 (33%)                                 │
 │                                                                  │
-│  Claude: "Understood. I'll weight correctness-related            │
-│  learnings higher going forward. I've also noted that            │
-│  'token efficiency' learnings from Jan 10-15 were                │
-│  context-specific and shouldn't become permanent rules."         │
+│  **Suggested Process Improvements**                              │
 │                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-#### Outcome
-
-- System self-identifies drift
-- Human provides context
-- Course correction is instant
-- Drift doesn't become permanent
-
-#### What Dev DOESN'T Have To Do
-
-- Monitor every retrospection
-- Notice the drift themselves
-- Manually edit learning files
-
----
-
-### Journey 7: Creating a New Skill
-
-**Goal:** Turn a recurring multi-step pattern into a reusable skill.
-
-**Duration:** 5 minutes
-
-#### Scene
-
-System has noticed dev does the same complex workflow repeatedly. It suggests creating a skill.
-
-#### Flow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
+│  1. Add mid-session reflection for async (briefer retros)       │
+│  2. Increase pattern threshold from 3 to 4 (fewer false +)      │
+│  3. Retire rule 'always-use-interfaces' (no impact)             │
 │                                                                  │
-│  Claude: "I've noticed a pattern across 5 recent sessions.       │
+│  Approve these adjustments?                                      │
+│  [Approve All] [Review Each] [Dismiss]"                         │
 │                                                                  │
-│  **Pattern: Debug Workflow**                                     │
-│                                                                  │
-│  When debugging, you consistently:                               │
-│  1. Check the error message                                      │
-│  2. Find the relevant file                                       │
-│  3. Look at recent changes (git diff)                            │
-│  4. Check test coverage for that area                            │
-│  5. Form hypothesis and test                                     │
-│                                                                  │
-│  This is more than a simple rule—it's a multi-step process.      │
-│                                                                  │
-│  Would you like me to create a 'debug' skill that guides         │
-│  this workflow? You could invoke it with '/debug'.               │
-│                                                                  │
-│  [Create Skill] [Not Now] [Never for This Pattern]"              │
-│                                                                  │
-│  Dev: [clicks Create Skill]                                      │
-│                                                                  │
-│  Claude: "Created .claude/skills/debug/SKILL.md                  │
-│                                                                  │
-│  Now when you say 'help me debug this' or '/debug',              │
-│  I'll follow this workflow. You can customize the skill          │
-│  file anytime."                                                  │
+│  Dev: [Review Each]                                              │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Outcome
-
-- Complex pattern becomes one-click workflow
-- Skill is customizable
-- Dev's expertise is encoded
-
-#### What Dev DOESN'T Have To Do
-
-- Notice they have a consistent pattern
-- Write the skill from scratch
-- Figure out the skill format
+**Key principle:** The system proposes improvements to itself; humans approve.
 
 ---
 
-### Journey 8: Understanding Why
+#### Journey 5.5: Understanding Provenance
 
-**Goal:** Trace back why a rule or behavior exists.
-
-**Duration:** 1-2 minutes
-
-#### Scene
-
-Dev encounters a rule they don't remember creating. Or a new team member asks why Claude behaves a certain way.
-
-#### Flow
+**Goal:** Trace why a rule or behavior exists.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                  │
-│  Dev: "Why do you always remind me about tests before commit?"   │
+│  Dev: "Why do you always remind me about tests?"                │
 │                                                                  │
-│  Claude: "That comes from a rule created on Jan 12.              │
+│  Claude: "That comes from a rule created on Jan 12.             │
 │                                                                  │
 │  **Origin Story:**                                               │
 │                                                                  │
-│  This rule exists because 'forgetting to run tests' appeared     │
-│  as a recurring issue in 4 sessions between Jan 5-12:            │
+│  This rule exists because 'forgetting tests' appeared           │
+│  in 4 sessions between Jan 5-12:                                │
 │                                                                  │
-│  - Jan 5: CI failed after push, 20 min wasted                    │
-│  - Jan 8: Same issue, tests would have caught bug                │
-│  - Jan 10: Pushed broken code to PR                              │
-│  - Jan 12: You said 'I keep doing this'                          │
+│  • Jan 5: CI failed, 20 min wasted                              │
+│  • Jan 8: Tests would have caught bug                           │
+│  • Jan 10: Pushed broken code                                   │
+│  • Jan 12: You said 'I keep doing this'                         │
 │                                                                  │
-│  On Jan 12, I suggested creating this rule and you approved.     │
+│  On Jan 12, I suggested this rule and you approved.             │
 │                                                                  │
-│  Since then, the rule has been applied 12 times and              │
-│  prevented an estimated 4 CI failures.                           │
+│  **Impact since creation:**                                      │
+│  Applied 12 times, prevented ~4 CI failures.                    │
 │                                                                  │
-│  Want to modify or remove this rule?"                            │
+│  Want to modify or remove it?"                                   │
 │                                                                  │
-│  Dev: "No, keep it. Just wanted to know why."                    │
+│  Dev: "No, keep it. Just curious."                               │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Outcome
+---
 
-- Full provenance available
-- Shows value delivered
-- Easy to modify if needed
+## The Recursive Learning Model
 
-#### What Dev DOESN'T Have To Do
+### How Each Layer Improves
 
-- Search through files
-- Remember when/why things were created
-- Guess at the reasoning
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  LAYER 1: WORK                                                   │
+│  Improved by: Rules, skills from Layer 3                        │
+│  Example: "Always run tests" rule prevents CI failures          │
+│                                                                  │
+│  LAYER 2: RETROSPECTION                                          │
+│  Improved by: Insights from Layer 4                             │
+│  Example: "Add checkpoint reflections in async mode"            │
+│                                                                  │
+│  LAYER 3: META-RETROSPECTION                                     │
+│  Improved by: Analysis from Layer 4                             │
+│  Example: "Increase pattern threshold to reduce false +"        │
+│                                                                  │
+│  LAYER 4: META-META ANALYSIS                                     │
+│  Improved by: Human oversight and tuning                        │
+│  Example: "Weight human-marked outcomes higher"                 │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### What Gets Learned at Each Layer
+
+| Layer | Learns About | Examples |
+|-------|--------------|----------|
+| **Work** | How to code better | "Batch operations > individual" |
+| **Retrospection** | What to notice | "Track decisions, not just outcomes" |
+| **Meta** | What patterns matter | "3 occurrences = strong signal" |
+| **Meta-Meta** | How to learn | "Async retros need more structure" |
+
+### Human Touchpoints
+
+| Layer | Human Role | Effort | Frequency |
+|-------|------------|--------|-----------|
+| **Work** | Provide tasks, review | Active | Per session |
+| **Retrospection** | Mark outcomes | 30 sec | Per session |
+| **Meta** | Approve rules/skills | 5 min | When surfaced |
+| **Meta-Meta** | Tune learning process | 10 min | Monthly |
 
 ---
 
@@ -537,104 +744,65 @@ Dev encounters a rule they don't remember creating. Or a new team member asks wh
 
 ### 1. Invisible When Working
 
-During active coding, the learning system is silent. No popups, no interruptions, no "did you know" tooltips. Work flows normally.
+Learning happens in background. No interruptions during active coding.
 
-### 2. Gentle at Transitions
+### 2. Observe First, Confirm Later
 
-Reflection prompts appear only at natural breakpoints:
-- End of session
-- Before starting new task
-- After significant milestone
+System analyzes and proposes; humans validate or correct. Never interrogate.
 
-Never mid-thought.
+### 3. Progressive Disclosure
 
-### 3. Evidence-Based Suggestions
+```
+Level 0: System learns silently
+Level 1: Alerts only on threshold breach
+Level 2: Dashboard on request
+Level 3: Detailed retrospections if curious
+Level 4: Full meta-analysis for tuning
+```
 
-Every suggestion comes with evidence:
-- "This appeared in N sessions"
-- "Here are the specific examples"
-- "This correlates with X% success rate"
+### 4. Human Approval for Permanence
+
+Rules, skills, process changes—all require human approval. System proposes, human disposes.
+
+### 5. Evidence-Based Everything
+
+Every suggestion includes:
+- How many times pattern appeared
+- Which sessions it came from
+- What the impact was
 
 No vague recommendations.
 
-### 4. One-Click Actions
+### 6. Graceful Degradation
 
-Common responses are single clicks:
-- [Approve] [Dismiss] [Later]
-- [Yes] [No] [Skip]
-
-Typing is optional, never required.
-
-### 5. Graceful Degradation
-
-System works at every engagement level:
-- **Zero engagement:** System still learns from self-reflection
-- **Minimal engagement:** Occasional yes/no feedback
-- **Full engagement:** Intent file, regular dashboard checks, rule customization
-
-Each level provides value.
-
----
-
-## Information Architecture
-
-### What Dev Sees (Progressive Disclosure)
-
-```
-Level 0: Nothing (system runs silently)
-    │
-    ▼
-Level 1: Alerts only (threshold breaches)
-    │
-    ▼
-Level 2: Dashboard summary (weekly health)
-    │
-    ▼
-Level 3: Detailed retrospections (on demand)
-    │
-    ▼
-Level 4: Raw data (for debugging)
-```
-
-### Where Things Live
-
-```
-For Humans:
-├── /dashboard         → Visual health summary
-├── /retrospect        → Trigger reflection
-├── /meta-retrospect   → Batch analysis
-└── "Why do you..."    → Provenance queries
-
-For Files:
-├── .claude/intent.yaml           → Human-defined goals (edit directly)
-├── .claude/rules/                → Human-approved rules (edit if needed)
-└── .claude/skills/               → Human-approved skills (edit if needed)
-
-System Internals (rarely need to touch):
-└── .claude/cache/retrospections/ → Learning data
-```
+Works at every engagement level:
+- Zero engagement: Self-reflection still captures learnings
+- Minimal: Occasional yes/no
+- Full: Intent file, dashboards, meta-tuning
 
 ---
 
 ## Success Metrics
 
-### For Individual Developers
+### User-Felt Outcomes
 
 | What They Feel | How We Measure |
 |----------------|----------------|
-| "Claude stops repeating mistakes" | Recurring issue rate <20% |
-| "I spend less time re-explaining" | Session setup time decreases |
+| "Claude stops making same mistakes" | Recurring issue rate <20% |
+| "Less time re-explaining things" | Context carryover rate >80% |
 | "Claude remembers what works" | Learning application rate >60% |
-| "The system doesn't annoy me" | Alert frequency <2/week |
+| "System doesn't annoy me" | Alert frequency <2/week |
+| "I trust autonomous work" | Async success rate >70% |
 
-### For the System
+### System Health
 
-| Metric | Target | Why It Matters |
-|--------|--------|----------------|
-| Reflection completion rate | >70% | Are devs engaging? |
-| Recommendation acceptance rate | >50% | Are suggestions useful? |
-| Rule effectiveness correlation | >0.3 | Do rules actually help? |
-| Drift detection accuracy | >80% | Can we catch misalignment? |
+| Metric | Target | Meaning |
+|--------|--------|---------|
+| Retrospection completion | >70% | Users engaging with learning |
+| Recommendation acceptance | >50% | Suggestions are useful |
+| Rule effectiveness | >60% | Rules actually help |
+| Drift detection accuracy | >80% | Catching misalignment |
+| Escalation appropriateness | >90% | Right things escalated |
 
 ---
 
@@ -642,21 +810,17 @@ System Internals (rarely need to touch):
 
 ### What This System Is NOT
 
-1. **Not a keylogger.** We don't record everything. Claude reflects on its own work.
-
-2. **Not automatic.** Humans approve every permanent change. No auto-created rules.
-
-3. **Not prescriptive.** System suggests, human decides. Always.
-
-4. **Not invasive.** Zero overhead during active work. Reflection is optional.
-
-5. **Not a replacement for good practices.** This helps Claude learn YOUR practices, not impose its own.
+1. **Not a keylogger** — Claude reflects on its own work, not surveillance
+2. **Not fully automatic** — Humans approve all permanent changes
+3. **Not prescriptive** — Learns YOUR patterns, doesn't impose its own
+4. **Not invasive** — Zero overhead during active work
+5. **Not infallible** — Proposes improvements; humans decide
 
 ### Technical Boundaries
 
-- **Local only.** No external services required.
-- **File-based.** Human-readable, git-trackable.
-- **Lightweight.** No database servers, no background processes.
+- **Local only** — No external services required
+- **File-based** — Human-readable, git-trackable
+- **Lightweight** — No database servers, no background daemons
 
 ---
 
@@ -664,79 +828,124 @@ System Internals (rarely need to touch):
 
 ### Phase 1: Foundation
 
-**What ships:**
-- `/retrospect` command for end-of-session reflection
-- Structured storage of retrospections
-- Basic outcome tracking (success/partial/failed)
+**Ships:**
+- Repository onboarding (observe-first)
+- `/retrospect` command
+- Structured retrospection storage
+- Basic outcome tracking
 
-**User value:**
-- Sessions have memory
-- "What worked" is captured automatically
+**Value:** Sessions have memory.
 
 ### Phase 2: Intelligence
 
-**What ships:**
+**Ships:**
 - Meta-retrospection (batch analysis)
-- Recurring issue detection
+- Pattern detection
 - Rule/skill suggestions
+- Recurring issue alerts
 
-**User value:**
-- Patterns surface automatically
-- One-click rule creation
+**Value:** Patterns surface automatically.
 
-### Phase 3: Alignment
+### Phase 3: Autonomy
 
-**What ships:**
-- Intent file and goal-setting flow
-- Drift detection and alerts
-- Dashboard with health metrics
+**Ships:**
+- Async mode with checkpoints
+- Self-correction mid-session
+- Escalation protocol
+- Issue-based handoffs
 
-**User value:**
-- System stays aligned with human goals
-- Visibility into learning health
+**Value:** Claude works while you sleep.
 
-### Phase 4: Polish
+### Phase 4: Recursion
 
-**What ships:**
-- Provenance queries ("why does this rule exist?")
-- Automatic trigger options
-- Team sharing capabilities
+**Ships:**
+- Meta-meta analysis
+- Learning process improvements
+- Effectiveness tracking
+- Full provenance
 
-**User value:**
-- Full transparency
-- Hands-off operation
-- Knowledge compounds across team
+**Value:** System improves how it improves.
 
 ---
 
 ## Open Questions
 
-1. **How often should we prompt for reflection?**
-   - Every session? Long sessions only? User preference?
+1. **Reflection frequency in async?** Every 30 min? Adaptive based on progress?
 
-2. **What's the right alert threshold?**
-   - Too sensitive = annoying. Too lenient = misses issues.
+2. **Pattern threshold?** 3 occurrences? Should it adapt based on rejection rate?
 
-3. **Should rules expire?**
-   - If a rule hasn't been relevant in 30 days, should it auto-disable?
+3. **Rule expiration?** Auto-disable after 30 days of no relevance?
 
-4. **How do we handle conflicting learnings?**
-   - Session A says "approach X works." Session B says "approach X failed."
+4. **Cross-project learning?** Should learnings transfer between projects?
 
-5. **Multi-project learning?**
-   - Should learnings from Project A inform Project B? When?
+5. **Team learning?** How do individual learnings become team knowledge?
+
+6. **Escalation timeout?** How long to wait for human before auto-deciding?
 
 ---
 
-## Appendix: Interaction Summary
+## Appendix: Interaction Budget
 
-| Touchpoint | Frequency | Duration | Human Effort |
-|------------|-----------|----------|--------------|
-| Initial setup | Once | 15-30 min | Guided conversation |
-| End-of-session reflection | Per session | 30-60 sec | One click + optional feedback |
-| Alert response | ~2/week | 2-5 min | Review + one click |
-| Dashboard check | Weekly | 2-3 min | Glance |
-| Alignment correction | Rare | 5-10 min | Choose option + optional context |
-| **Total weekly** | | | **~15-20 minutes** |
+| Activity | Frequency | Duration | Annual Hours |
+|----------|-----------|----------|--------------|
+| Onboarding | Once | 15 min | 0.25 |
+| Objective setting | 2/week | 5 min | 8.7 |
+| Session reflection | Daily | 30 sec | 3 |
+| Outcome marking | Daily | 5 sec | 0.5 |
+| Alert response | 2/week | 3 min | 5.2 |
+| Dashboard check | Weekly | 2 min | 1.7 |
+| Meta-review | Monthly | 10 min | 2 |
+| **Total** | | | **~22 hours/year** |
 
-Compare to: Manually tracking learnings, noticing patterns, writing rules (~2-3 hours/week)
+Compare to: Manual learning tracking, pattern detection, rule writing (~100+ hours/year)
+
+---
+
+## Appendix: Issue Taxonomy
+
+```
+📦 EPIC — Large initiative (days/weeks)
+│
+├── 📖 STORY — Deliverable chunk (1-4 hours)
+│   ├── ✅ TASK — Atomic unit (15-60 min)
+│   ├── ✅ TASK
+│   └── ✅ TASK
+│
+├── 📖 STORY
+│
+└── 🐛 BUG — Can appear at any level
+
+💡 SPIKE — Time-boxed research
+🔄 CONTINUATION — Auto-created on session timeout
+```
+
+---
+
+## Appendix: The Learning Loop Visualized
+
+```
+         ┌──────────────────────────────────────────────────────┐
+         │                                                      │
+         │                    HUMAN LAYER                       │
+         │         Intent • Priorities • Approvals              │
+         │                                                      │
+         └─────────────────────┬────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  ┌─────────┐    ┌─────────────┐    ┌──────────────┐             │
+│  │  WORK   │───▶│ RETROSPECT  │───▶│    META      │──┐          │
+│  │         │    │             │    │              │  │          │
+│  │ Tasks   │    │ What worked │    │ Patterns     │  │          │
+│  │ Code    │    │ What failed │    │ Trends       │  │          │
+│  │ Issues  │    │ Learnings   │    │ Drift        │  │          │
+│  └────▲────┘    └─────────────┘    └──────────────┘  │          │
+│       │                                              │          │
+│       │         Rules, Skills, Process Changes       │          │
+│       └──────────────────────────────────────────────┘          │
+│                                                                  │
+│                        RECURSIVE LOOP                            │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
