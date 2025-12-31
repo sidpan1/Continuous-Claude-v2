@@ -56,26 +56,20 @@ git add src/ dist/
 
 ## Shell Wrapper Pattern
 
-Shell wrappers support dual installation (workspace first, global fallback):
+Shell wrappers use `utils.sh` for dual installation (workspace first, global fallback):
 
 ```bash
 #!/bin/bash
 set -e
-
-# Check workspace first, then global
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GLOBAL_DIR="$HOME/.claude/hooks"
-
-if [ -f "$SCRIPT_DIR/dist/my-hook.mjs" ]; then
-  cd "$SCRIPT_DIR"
-  cat | node dist/my-hook.mjs
-elif [ -f "$GLOBAL_DIR/dist/my-hook.mjs" ]; then
-  cd "$GLOBAL_DIR"
-  cat | node dist/my-hook.mjs
-else
-  echo '{"result":"continue"}'
-fi
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+run_hook "my-hook"
 ```
+
+**Available functions in `utils.sh`:**
+| Function | Description |
+|----------|-------------|
+| `run_hook "name"` | Run compiled hook (.mjs only) |
+| `run_hook_dev "name"` | Run hook with TypeScript fallback for development |
 
 ## Installation Modes
 
