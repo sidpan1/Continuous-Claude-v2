@@ -56,17 +56,40 @@ git add src/ dist/
 
 ## Shell Wrapper Pattern
 
-Shell wrappers must use portable paths (not `~/.claude/hooks`):
+Shell wrappers support dual installation (workspace first, global fallback):
 
 ```bash
 #!/bin/bash
 set -e
+
+# Check workspace first, then global
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-cat | node dist/my-hook.mjs
+GLOBAL_DIR="$HOME/.claude/hooks"
+
+if [ -f "$SCRIPT_DIR/dist/my-hook.mjs" ]; then
+  cd "$SCRIPT_DIR"
+  cat | node dist/my-hook.mjs
+elif [ -f "$GLOBAL_DIR/dist/my-hook.mjs" ]; then
+  cd "$GLOBAL_DIR"
+  cat | node dist/my-hook.mjs
+else
+  echo '{"result":"continue"}'
+fi
 ```
 
-This ensures hooks work regardless of where the project is cloned.
+## Installation Modes
+
+| Mode | Location | Use Case |
+|------|----------|----------|
+| **Workspace** | `$PROJECT/.claude/hooks/` | Project-specific hooks (takes priority) |
+| **Global** | `~/.claude/hooks/` | Shared hooks across all projects |
+
+**Install globally:**
+```bash
+cp -r .claude/hooks ~/.claude/hooks
+```
+
+Workspace hooks always take priority over global hooks.
 
 ## Hook Input/Output
 
