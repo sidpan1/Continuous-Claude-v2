@@ -29,49 +29,51 @@ Small adjustments at meta-layer cascade through retrospection → worker with am
 
 ## Architecture
 
+**Key insight**: Claude Code is the only LLM. Worker and Retrospector are the same session.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  HUMAN LAYER                                                │
-│  ─────────────────────────────────────────────────────────  │
-│  Input: Intent / Job-to-be-Done ("I want reliable auth")   │
-│  Action: Tune meta-retrospector policies                    │
-│  Frequency: Periodic review (weekly/monthly)                │
-│  Output: Policy adjustments, goal refinements               │
+│  HUMAN LAYER (policy tuning, periodic)                       │
+│  Input: Intent    Output: Policy adjustments                 │
 └─────────────────────────────────────────────────────────────┘
-                           ↓ policies
+                           ↓
 ┌─────────────────────────────────────────────────────────────┐
-│  META-RETROSPECTOR LAYER                                    │
-│  ─────────────────────────────────────────────────────────  │
-│  Input: Batch of retrospection outputs (5-10 sessions)      │
-│  Questions:                                                 │
-│    - Are learnings improving in quality?                    │
-│    - Are the same issues being flagged repeatedly?          │
-│    - Is retrospection drifting from human intent?           │
-│    - Are learnings actually being applied?                  │
-│  Output: Adjustments to retrospector prompts/focus          │
-│  Frequency: Every N sessions (batch operation)              │
+│  META-RETROSPECTOR (every N sessions)                        │
+│  Input: Batch of retrospection JSONs                         │
+│  Output: Trend analysis, recurring issues, drift score       │
 └─────────────────────────────────────────────────────────────┘
-                           ↓ improves
+                           ↓
 ┌─────────────────────────────────────────────────────────────┐
-│  RETROSPECTOR LAYER                                         │
+│  CLAUDE CODE SESSION (worker + retrospector combined)        │
 │  ─────────────────────────────────────────────────────────  │
-│  Input: Single session worker output                        │
-│  Questions:                                                 │
-│    - What worked well?                                      │
-│    - What failed and why?                                   │
-│    - What should be done differently next time?             │
-│  Output: Learnings written to .claude/rules/ or CLAUDE.md   │
-│  Frequency: End of each session                             │
+│  1. Load prior learnings (SessionStart hook)                 │
+│  2. Execute task (worker)                                    │
+│  3. Run tests                                                │
+│  4. /retrospect → self-evaluate, classify, extract learnings │
+│  5. Write JSON to .claude/cache/retrospections/              │
+│                                                              │
+│  ONE session = ONE cost                                      │
 └─────────────────────────────────────────────────────────────┘
-                           ↓ guides
-┌─────────────────────────────────────────────────────────────┐
-│  WORKER LAYER                                               │
-│  ─────────────────────────────────────────────────────────  │
-│  Input: Task + learnings from retrospector                  │
-│  Action: Execute development tasks                          │
-│  Output: Artifacts, code, outcomes                          │
-│  Frequency: Continuous                                      │
-└─────────────────────────────────────────────────────────────┘
+```
+
+**Per-session flow**:
+```
+Task → Work → Test → /retrospect → JSON
+       └──────────────────────────────┘
+              Same Claude Code session
+```
+
+**Cross-session flow**:
+```
+Session 1 → retrospection.json
+Session 2 → retrospection.json
+Session 3 → retrospection.json
+Session 4 → retrospection.json
+Session 5 → retrospection.json
+            ↓
+      /meta-retrospect (analyzes all 5)
+            ↓
+      Meta-analysis JSON + recommendations
 ```
 
 ## Implementation Plan
@@ -1191,12 +1193,10 @@ This section describes how to run the full experiment using only free, open-sour
 |-----------|----------|----------------------|
 | **Benchmarks** | SWE-bench Lite | ✅ Free (Hugging Face) |
 | **Tracing** | Braintrust ($) | Local SQLite + JSON logs |
-| **Annotations** | Human annotator ($) | Agent-as-judge (Claude Code self-evaluates) |
-| **Judge LLM** | Separate API calls ($) | Agent-as-judge (same session) |
 | **Embeddings** | OpenAI/external ($) | Local sentence-transformers |
 | **Claude Code** | Required | ✅ Only cost (~$50-100 full, ~$15-30 minimal) |
 
-**Key architecture decision**: Claude Code performs ALL roles (worker, retrospector, meta-retrospector). No separate LLM calls.
+Worker + Retrospector = same Claude Code session. No separate judge LLM needed.
 
 ## Alternative Architecture
 
@@ -1312,131 +1312,9 @@ class LocalTracer:
             }
 ```
 
-### 2. Agent-as-Judge (Claude Code Self-Evaluation)
+### 2. Local Embeddings (for Drift Detection)
 
-**Key insight**: Claude Code itself performs retrospection and failure classification as part of its normal workflow. No separate LLM API calls needed.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  SINGLE CLAUDE CODE SESSION                                      │
-│                                                                   │
-│  1. Worker phase:     Execute SWE-bench task                     │
-│  2. Test phase:       Run tests, observe outcome                 │
-│  3. Retrospect phase: Analyze own work, classify failure         │
-│  4. Output phase:     Write structured JSON to cache             │
-│                                                                   │
-│  All in ONE session = ONE LLM cost                               │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Implementation via `/retrospect` skill**:
-
-The retrospection skill guides Claude Code to self-evaluate at end of task:
-
-```markdown
-# .claude/skills/retrospect/SKILL.md
----
-description: Analyze current session, classify outcome, extract learnings
----
-
-# Retrospect
-
-After completing a task, analyze your own work.
-
-## Process
-
-1. **Review outcome**: Did tests pass? What was the result?
-
-2. **Classify failure** (if failed):
-   Choose ONE from:
-   - understanding/misread_requirements
-   - understanding/missed_edge_case
-   - understanding/wrong_scope
-   - implementation/syntax_error
-   - implementation/type_error
-   - implementation/logic_error
-   - implementation/import_error
-   - environment/test_flakiness
-   - environment/setup_failure
-   - environment/timeout
-   - process/premature_commit
-   - process/incomplete_fix
-   - process/regression
-
-3. **Check learning application**:
-   Review learnings loaded at session start.
-   Did you apply any? Which one helped?
-
-4. **Extract new learnings**:
-   What would help next time?
-   Be specific and actionable.
-
-5. **Write output**:
-   Save to `.claude/cache/retrospections/<session>.json`
-
-## Output Format
-
-```json
-{
-  "session_id": "<from context>",
-  "task_id": "<SWE-bench issue ID>",
-  "timestamp": "<ISO format>",
-  "outcome": "success | partial | failure",
-  "failure_mode": "<category/type if failed>",
-  "learnings_applied": ["<learning_id>", ...],
-  "new_learnings": [
-    {
-      "id": "<generated UUID>",
-      "category": "<understanding|implementation|process>",
-      "insight": "<specific, actionable lesson>",
-      "confidence": 0.8
-    }
-  ],
-  "reasoning": "<brief explanation of what happened>"
-}
-```
-```
-
-**Why this works**:
-
-1. **Same context**: Claude Code already has full context of the task it just completed
-2. **No API overhead**: Retrospection is part of the same conversation, not a separate call
-3. **Better accuracy**: Self-evaluation with full context beats external classification
-4. **Natural workflow**: Fits the existing skill/hook pattern
-
-**Experiment workflow**:
-
-```
-For each SWE-bench task:
-  1. Load prior learnings into context (SessionStart hook)
-  2. Present task: "Fix GitHub issue: <description>"
-  3. Claude Code works on solution
-  4. Run tests (Bash tool)
-  5. Trigger: "/retrospect" or SessionEnd hook
-  6. Claude Code self-evaluates and writes JSON
-  7. LocalTracer records session metadata
-```
-
-**Cost comparison**:
-
-| Approach | LLM Calls per Task | Relative Cost |
-|----------|-------------------|---------------|
-| Separate judge API | 2 (worker + judge) | 1.5-2x |
-| Agent-as-judge (same session) | 1 (worker includes retrospection) | 1x |
-
-**Self-evaluation prompts embedded in skill**:
-
-The `/retrospect` skill contains the evaluation criteria, so Claude Code uses its own context to answer:
-- "Did I solve the right problem?" → misread_requirements check
-- "Did I handle edge cases?" → missed_edge_case check
-- "Did tests reveal type issues?" → type_error check
-- etc.
-
-No external prompting needed—the skill guides self-analysis.
-
-### 3. Local Embeddings (Replace OpenAI)
-
-Use sentence-transformers for drift detection:
+Use sentence-transformers:
 
 ```python
 # src/meta/local_embeddings.py
@@ -1486,7 +1364,7 @@ class LocalEmbedder:
 # or: uv add sentence-transformers
 ```
 
-### 4. Free Benchmark Alternative
+### 3. Free Benchmark Alternative (Optional)
 
 If SWE-bench is too heavy, use a lighter alternative:
 
@@ -1622,107 +1500,25 @@ Tracing: Local SQLite
 Estimated cost: ~$15-30 (just Claude Code API)
 ```
 
-## Implementation: Zero-Dependency Experiment Runner
+## Experiment Runner Sketch
 
 ```python
-# scripts/run_experiment_local.py
+# scripts/run_experiment.py
+# Orchestrates Claude Code sessions for the experiment
 
 """
-Run the meta-retrospection experiment with zero external dependencies.
-
-Usage:
-    uv run python scripts/run_experiment_local.py --phases 3 --tasks-per-phase 15
+Usage: uv run python scripts/run_experiment.py --phases 3 --tasks-per-phase 15
 """
 
-import argparse
-import asyncio
-from pathlib import Path
+# Each phase runs Claude Code sessions:
+# Phase 1 (Baseline):  Task → Work → Test → Record (no retrospection)
+# Phase 2 (Retro):     Task → Work → Test → /retrospect → Record
+# Phase 3 (Meta):      Same as Phase 2, but /meta-retrospect every 5 tasks
 
-# Local imports (no external deps except anthropic SDK)
-from src.meta.local_tracing import LocalTracer
-from src.meta.llm_judge import classify_failure, check_learning_application
-from src.meta.local_embeddings import LocalEmbedder
+# The actual work happens in Claude Code sessions via subprocess or SDK.
+# This script orchestrates sessions and collects the JSON outputs.
 
-
-async def run_experiment(
-    phases: int = 3,
-    tasks_per_phase: int = 15,
-    model: str = "claude-sonnet-4-20250514"
-):
-    """Run experiment with local infrastructure."""
-
-    # Initialize local components
-    tracer = LocalTracer()
-    embedder = LocalEmbedder()
-    experiment_id = f"exp-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-
-    # Load tasks (from local benchmark or SWE-bench)
-    tasks = load_tasks(tasks_per_phase * phases)
-
-    # Phase 1: Baseline
-    print("Phase 1: Baseline (no learning)")
-    for task in tasks[:tasks_per_phase]:
-        session_id = tracer.start_session(experiment_id, 1, task['id'])
-        success = await run_task(task, model, learnings=[])
-        if not success:
-            failure_mode = await classify_failure(...)
-            tracer.end_session(session_id, False, {'failure_mode': failure_mode})
-        else:
-            tracer.end_session(session_id, True)
-
-    # Phase 2: Retrospection
-    print("Phase 2: Retrospection enabled")
-    learnings = []
-    for task in tasks[tasks_per_phase:tasks_per_phase*2]:
-        session_id = tracer.start_session(experiment_id, 2, task['id'])
-        success = await run_task(task, model, learnings=learnings)
-
-        # Retrospect
-        retrospection = await run_retrospection(task, success)
-        learnings.extend(retrospection['learnings'])
-
-        # Check if prior learning was applied
-        if learnings:
-            application = await check_learning_application(learnings[:-1], ...)
-            tracer.end_session(session_id, success, {
-                'learning_applied': application['learning_id']
-            })
-
-    # Phase 3: Meta-retrospection
-    print("Phase 3: Meta-retrospection enabled")
-    for i, task in enumerate(tasks[tasks_per_phase*2:]):
-        session_id = tracer.start_session(experiment_id, 3, task['id'])
-        success = await run_task(task, model, learnings=learnings)
-
-        # Retrospect
-        retrospection = await run_retrospection(task, success)
-        learnings.extend(retrospection['learnings'])
-
-        # Meta-retrospect every 5 tasks
-        if (i + 1) % 5 == 0:
-            drift_score = embedder.drift_score(
-                intent="Produce reliable, maintainable code",
-                learnings=[l['insight'] for l in learnings[-15:]]
-            )
-            recurring = detect_recurring_issues(tracer, experiment_id, 3)
-            print(f"  Meta-retrospection: drift={drift_score:.2f}, recurring={recurring}")
-
-        tracer.end_session(session_id, success)
-
-    # Generate report
-    report = generate_report(tracer, experiment_id, embedder)
-    Path(f".claude/cache/experiments/{experiment_id}/report.md").write_text(report)
-    print(f"\nExperiment complete. Report: .claude/cache/experiments/{experiment_id}/report.md")
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--phases", type=int, default=3)
-    parser.add_argument("--tasks-per-phase", type=int, default=15)
-    parser.add_argument("--model", default="claude-sonnet-4-20250514")
-    args = parser.parse_args()
-
-    asyncio.run(run_experiment(args.phases, args.tasks_per_phase, args.model))
+# See full implementation in Story 1-4.
 ```
 
 ## New Dependencies (All Free)
@@ -1740,33 +1536,15 @@ dependencies = [
 
 ## Summary: What's Paid vs. Free
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| SWE-bench dataset | ✅ Free | Open source on Hugging Face |
-| Local tracing | ✅ Free | SQLite (existing infrastructure) |
-| Agent-as-judge | ✅ Free | Same Claude Code session does retrospection |
-| Local embeddings | ✅ Free | sentence-transformers (MIT license) |
-| Statistical analysis | ✅ Free | scipy, pandas (existing) |
-| Braintrust | ❌ Removed | Replaced with local tracer |
-| Human annotators | ❌ Removed | Claude Code self-evaluates |
-| Separate judge LLM | ❌ Removed | Agent-as-judge pattern |
-| External embedding APIs | ❌ Removed | Replaced with local embeddings |
-| **Claude Code** | 💰 Only Cost | ~$50-100 full experiment, ~$15-30 minimal |
+| Component | Status |
+|-----------|--------|
+| SWE-bench dataset | ✅ Free |
+| Local tracing (SQLite) | ✅ Free |
+| Local embeddings (sentence-transformers) | ✅ Free |
+| Statistical analysis (scipy, pandas) | ✅ Free |
+| **Claude Code** | 💰 Only cost (~$50-100 full, ~$15-30 minimal) |
 
-**Single LLM Architecture**: Claude Code is the only LLM. It does the work AND retrospects on its own work within the same session. This eliminates all additional API costs.
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  CLAUDE CODE = WORKER + RETROSPECTOR + META-RETROSPECTOR │
-│                                                           │
-│  Session 1: Task → Work → /retrospect → JSON             │
-│  Session 2: Task → Work → /retrospect → JSON             │
-│  ...                                                      │
-│  Session 5: → /meta-retrospect (analyze retrospections)  │
-│                                                           │
-│  All sessions use the SAME Claude Code instance          │
-└──────────────────────────────────────────────────────────┘
-```
+**Single LLM**: Claude Code does work + retrospection in same session. No other LLM costs.
 
 ---
 
