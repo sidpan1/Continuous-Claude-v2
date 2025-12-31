@@ -542,6 +542,41 @@
                 ]
             }
         },
+        "github-orchestration": {
+            "type": "domain",
+            "enforcement": "suggest",
+            "priority": "high",
+            "description": "Recursive self-coordination via GitHub issues, labels, and workflows for multi-agent parallelization",
+            "promptTriggers": {
+                "keywords": [
+                    "parallel tasks",
+                    "parallel execution",
+                    "break into subtasks",
+                    "create subtasks",
+                    "create sub-issues",
+                    "orchestrate",
+                    "coordinate agents",
+                    "multi-agent",
+                    "github workflow",
+                    "github action",
+                    "autonomous workflow",
+                    "self-improving",
+                    "recursive tasks",
+                    "batch processing",
+                    "run in parallel",
+                    "parallel workers"
+                ],
+                "intentPatterns": [
+                    "(break|split|decompose).*?(into|to).*?(subtask|sub-issue|parallel)",
+                    "(create|set up).*?(workflow|action).*?(github|autonomous)",
+                    "(coordinate|orchestrate).*?(agent|claude|task)",
+                    "(parallel|concurrent).*?(execution|task|worker)",
+                    "(multi|multiple).*?agent",
+                    "(self|auto).*?(improving|learning|coordination)",
+                    "(run|execute).*?(parallel|simultaneously|concurrently)"
+                ]
+            }
+        },
         "braintrust-analyze": {
             "type": "domain",
             "enforcement": "suggest",
