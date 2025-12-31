@@ -2,9 +2,11 @@
 
 ## Overview
 
-Build a meta-retrospection system that enables Claude Code to learn from sessions and improve over time. Validate through dogfooding (building the system) then benchmark against SWE-bench Lite.
+Use SWE-bench Lite as the **workload that drives self-improvement**. Each task provides verifiable ground truth (tests pass/fail) that feeds the learning loop. The system builds itself through iterative learning on real coding tasks.
 
-**Core hypothesis**: Structured self-reflection + batch pattern analysis reduces recurring failures and improves task success rates.
+**Core hypothesis**: Structured self-reflection + batch pattern analysis, trained on verifiable outcomes, reduces recurring failures and improves task success rates over time.
+
+**Key insight**: SWE-bench isn't validation *after* building - it's the **feedback mechanism** that enables the system to learn and improve. Ground truth from test results creates a closed loop.
 
 ---
 
@@ -80,31 +82,232 @@ Build a meta-retrospection system that enables Claude Code to learn from session
 
 ## What We're NOT Doing (MVP Scope)
 
-1. **NOT building async mode** - Sync retrospection only
-2. **NOT building dashboard UI** - CLI commands only
-3. **NOT implementing automatic rule creation** - Keep compound-learnings manual
-4. **NOT integrating Braintrust traces** - Local-only, free components
-5. **NOT building drift alerts** - Manual drift score review
-6. **NOT implementing learning velocity metrics** - Simple pattern counts only
+1. **NOT building dashboard UI** - CLI commands only
+2. **NOT implementing automatic rule creation** - Keep compound-learnings manual
+3. **NOT integrating Braintrust traces** - Local-only, free components
+4. **NOT building drift alerts** - Manual drift score review
+5. **NOT implementing learning velocity metrics** - Simple pattern counts only
+
+## Primary Target: Async Mode
+
+**Async mode is built first** because:
+1. SWE-bench tasks are ideal async workloads (bounded, isolated, verifiable)
+2. Each task has clear completion criteria (tests pass)
+3. Checkpoint reflections during async work enable mid-task learning
+4. Escalation protocol develops naturally from hitting blockers
+5. Self-correction emerges from test failure feedback
+
+The learning system and async mode **co-evolve**: async work generates learnings, learnings improve async work.
+
+### Async Mode Architecture (SWE-bench Driven)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ASYNC SESSION                                                   │
+│                                                                  │
+│  Input: SWE-bench task (issue description, repo, tests)         │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │ Objective: Fix issue, make tests pass                       ││
+│  │ Time limit: 30 min                                          ││
+│  │ Constraints: From intent.yaml + prior learnings             ││
+│  └─────────────────────────────────────────────────────────────┘│
+│                                                                  │
+│  Work loop:                                                      │
+│  ├─ Analyze issue → form hypothesis                             │
+│  ├─ Implement fix                                                │
+│  ├─ Run tests → PASS/FAIL                                       │
+│  │   ├─ PASS → complete, retrospect                             │
+│  │   └─ FAIL → checkpoint reflection, retry (max 5)             │
+│  │                                                               │
+│  │  Every 10 min: checkpoint reflection                         │
+│  │   ├─ Am I making progress?                                   │
+│  │   ├─ Am I drifting from objective?                           │
+│  │   └─ Should I try different approach?                        │
+│  │                                                               │
+│  └─ Max attempts or timeout → retrospect with failure modes     │
+│                                                                  │
+│  Output:                                                         │
+│  ├─ Solution (if successful)                                    │
+│  ├─ Structured retrospection (always)                           │
+│  └─ Failure modes tagged (if failed)                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Escalation Protocol (Learned from Failures)
+
+```
+Escalation triggers (pause for human input):
+├─ Same approach fails 3 times
+├─ Stuck for >15 min with no test progress
+├─ Confidence drops below threshold
+└─ Pattern matches known "need-human" failure modes
+
+Self-correction triggers (no human needed):
+├─ Test failure with clear error message
+├─ Drift detected in checkpoint reflection
+├─ Prior learning suggests alternative approach
+└─ Time pressure forces hypothesis pruning
+```
 
 ---
 
 ## Implementation Approach
 
-### Strategy: Dogfood-First Development
+### Strategy: SWE-bench as Learning Workload
 
-Build MVP in phases, using retrospection after each phase to capture learnings. This validates the system while building it.
+SWE-bench tasks provide the **closed feedback loop** that trains the system. Each task has verifiable ground truth (tests pass or fail), enabling objective learning.
 
 ```
-Phase 1: Build retrospection capture
-  └─ Manual retrospection after phase
-Phase 2: Build meta-retrospection
-  └─ Run meta-retrospect on Phase 1 retrospection
-Phase 3: Integration & dogfood cycle
-  └─ Full loop: work → retrospect → meta-retrospect → apply
-Phase 4: SWE-bench validation
-  └─ Run experiment on benchmark
+┌─────────────────────────────────────────────────────────────────┐
+│                    THE LEARNING LOOP                             │
+│                                                                  │
+│   SWE-bench task                                                 │
+│        ↓                                                         │
+│   Attempt solution                                               │
+│        ↓                                                         │
+│   Run tests → PASS/FAIL (ground truth)                          │
+│        ↓                                                         │
+│   Retrospect: what worked, what failed, why                     │
+│        ↓                                                         │
+│   Store structured learning                                      │
+│        ↓                                                         │
+│   Next task (apply prior learnings)                             │
+│        ↓                                                         │
+│   Every N tasks: meta-retrospect                                │
+│        ↓                                                         │
+│   Extract patterns, update approach                             │
+│        ↓                                                         │
+│   Continue with improved patterns                               │
+│        ↓                                                         │
+│   [Success rate should increase over batches]                   │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+### Bootstrap Sequence
+
+The learning infrastructure is minimal to start - it grows as we learn what's needed:
+
+```
+Batch 0 (5 tasks):
+  └─ Basic async runner + manual retrospection
+  └─ Learn: what to capture, common failure modes
+  └─ Build: retrospection schema, checkpoint format
+
+Batch 1 (10 tasks):
+  └─ Async with checkpoints + structured retrospection
+  └─ Learn: when to escalate, what patterns emerge
+  └─ Build: escalation triggers, pattern detection
+
+Batch 2 (10 tasks):
+  └─ + Meta-retrospection after batch
+  └─ Learn: which learnings transfer, which are noise
+  └─ Build: learning application mechanism
+
+Batch 3 (10 tasks):
+  └─ + Automated learning loading + self-correction
+  └─ Learn: does success rate improve?
+  └─ Build: full async loop with learning integration
+
+Batch 4+ (N tasks):
+  └─ Full system, iterate based on metrics
+  └─ Measure: success rate trend, recurring issue reduction
+```
+
+**The system builds itself**: Each batch reveals what's missing, which gets built for the next batch. SWE-bench provides the ground truth that validates each iteration.
+
+---
+
+## Phase 0: Async Runner for SWE-bench
+
+**Goal**: Basic async execution harness that runs Claude on SWE-bench tasks.
+
+### 0.1 SWE-bench Task Loader
+
+**File**: `scripts/swebench_loader.py`
+
+```python
+"""
+Load and prepare SWE-bench tasks for async execution.
+
+USAGE:
+    # List available tasks
+    uv run python scripts/swebench_loader.py --list
+
+    # Get specific task
+    uv run python scripts/swebench_loader.py --task django__django-11583
+
+    # Get N random tasks for batch
+    uv run python scripts/swebench_loader.py --sample 10 --difficulty easy
+"""
+from datasets import load_dataset
+
+def load_task(task_id: str) -> dict:
+    """Load task with issue, repo, test command."""
+    ...
+```
+
+### 0.2 Async Task Runner
+
+**File**: `scripts/async_runner.py`
+
+```python
+"""
+Run Claude asynchronously on a coding task with checkpoints.
+
+USAGE:
+    # Run single task
+    uv run python scripts/async_runner.py \
+        --task django__django-11583 \
+        --timeout 30 \
+        --max-attempts 5
+
+    # Run batch
+    uv run python scripts/async_runner.py \
+        --batch experiments/batch-001/tasks.json \
+        --parallel 1
+"""
+```
+
+Core loop:
+1. Clone repo to temp directory
+2. Load task description (issue, hints)
+3. Load prior learnings (if any)
+4. Start Claude Code session with objective
+5. Monitor for:
+   - Test pass → success, capture retrospection
+   - Test fail → checkpoint reflection, retry
+   - Timeout → capture failure retrospection
+   - Max attempts → capture failure modes
+6. Clean up, move to next task
+
+### 0.3 Checkpoint Reflection (In-Task)
+
+During async work, after each test failure:
+```
+Checkpoint:
+- Attempt N of 5
+- Test result: FAIL (specific error)
+- Time elapsed: X min
+- Hypothesis: what I thought would work
+- Observation: what actually happened
+- Next approach: what I'll try next
+```
+
+Stored in task working directory, aggregated into final retrospection.
+
+### Success Criteria (Phase 0)
+
+**Automated:**
+- [ ] `scripts/swebench_loader.py --list` shows tasks
+- [ ] `scripts/async_runner.py --task X` completes (pass or fail)
+- [ ] Checkpoint files created during execution
+- [ ] Final result (success/failure) recorded
+
+**Manual:**
+- [ ] Claude attempts reasonable solutions
+- [ ] Checkpoints capture useful information
+- [ ] Timeout/max-attempts enforced
 
 ---
 
@@ -525,64 +728,103 @@ reduction = (baseline_recurring - meta_recurring) / baseline_recurring
 
 ---
 
-## Revised Experiment Design
+## Experiment Design: Self-Improving Batches
 
-### Design: Minimal Within-Subjects (Recommended)
+### Design: Iterative Learning on SWE-bench
+
+Not "baseline vs treatment" - instead, **continuous improvement measured over batches**:
 
 ```
-Phase 0: Warmup (5 tasks, discarded)
-Phase 1: Baseline (15 tasks, no learning)
-Phase 2: Retrospection (15 tasks, +retrospect after each)
-Phase 3: Meta-Retrospection (15 tasks, +meta every 5)
----
-Total: 50 tasks (~$20-40)
+Batch 0:  5 tasks  │ Async runner only, manual notes
+          ─────────┼─────────────────────────────────
+          Measure: baseline success rate, common failures
+          Build:   retrospection capture
+
+Batch 1: 10 tasks  │ + Structured retrospection
+          ─────────┼─────────────────────────────────
+          Measure: are retrospections useful?
+          Build:   checkpoint reflections, escalation
+
+Batch 2: 10 tasks  │ + Meta-retrospection, learning loading
+          ─────────┼─────────────────────────────────
+          Measure: success rate delta from Batch 0/1
+          Build:   pattern detection, self-correction
+
+Batch 3: 10 tasks  │ + Full learning loop
+          ─────────┼─────────────────────────────────
+          Measure: recurring issue reduction
+          Build:   automated learning application
+
+Batch 4+: N tasks  │ Iterate based on metrics
+          ─────────┼─────────────────────────────────
+          Measure: success rate trend over time
+          Build:   whatever's needed
+───────────────────────────────────────────────────────
+Total: 35+ tasks, ~$30-60, system improves as it runs
 ```
 
-### Why Minimal First?
+### Success Metric: Improvement Trend
 
-1. **Validate infrastructure** before committing to 185 tasks
-2. **Iterate on retrospection prompts** based on early results
-3. **Confirm signal exists** before scaling up
-4. **Lower cost/risk** for initial validation
+Instead of comparing discrete phases, measure:
+- **Success rate per batch** (should trend upward)
+- **Recurring issue rate per batch** (should trend downward)
+- **Learning application rate** (should trend upward)
 
-### Expansion Path
+```
+Expected trajectory:
 
-If minimal shows signal (success rate delta > 10%):
-1. Run full experiment (185 tasks)
-2. Add Phase 4: Human Policy Tuning (25 tasks)
-3. Publish results with statistical analysis
+Success rate:
+Batch 0: 15-20% (baseline)
+Batch 1: 20-25% (retrospection helps)
+Batch 2: 25-35% (meta-patterns applied)
+Batch 3: 35-45% (full loop working)
+Batch 4: 40-50% (continued improvement)
+```
 
-### Key Changes from Original Design
+### Why This Design?
 
-| Original | Revised | Rationale |
-|----------|---------|-----------|
-| 185 tasks | 45 tasks (minimal) | Validate first |
-| 4 phases | 3 phases (skip human policy for MVP) | Focus on automated learning |
-| External drift scoring | Keyword-based drift | Simpler, no embeddings needed |
-| Braintrust integration | Local-only | Free, self-contained |
+1. **No artificial separation** - learning is continuous, not phased
+2. **Each batch builds on previous** - matches compound learning hypothesis
+3. **Ground truth every task** - tests pass/fail, no ambiguity
+4. **System improves while running** - not "build then test"
+5. **Natural stopping point** - stop when improvement plateaus
 
 ---
 
 ## Timeline
 
-### Week 1: Foundation (Phase 1-2)
+### Integrated Build-and-Learn Approach
 
-| Day | Activity |
-|-----|----------|
-| Day 1 | Create intent file, retrospection schema |
-| Day 2 | Build retrospect.py script |
-| Day 3 | Build meta_retrospect.py script |
-| Day 4 | Integration, artifact indexing |
-| Day 5 | Dogfood: retrospect on Days 1-4 |
+Build and learn happen together. Each batch builds what's needed for the next.
 
-### Week 2: Validation (Phase 3-4)
+| Day | Batch | Tasks | Build | Learn |
+|-----|-------|-------|-------|-------|
+| 1 | Setup | 0 | SWE-bench loader, async runner | - |
+| 2 | 0 | 5 | Intent file, manual retrospection | Baseline failures |
+| 3 | 0→1 | - | Retrospection script from learnings | What to capture |
+| 4-5 | 1 | 10 | Checkpoint format | Escalation patterns |
+| 6 | 1→2 | - | Meta-retrospection from Batch 1 | Pattern detection |
+| 7-8 | 2 | 10 | Learning loading | Transfer effectiveness |
+| 9 | 2→3 | - | Self-correction from patterns | When to pivot |
+| 10-11 | 3 | 10 | Full loop integration | - |
+| 12 | Analysis | - | - | Write results |
 
-| Day | Activity |
-|-----|----------|
-| Day 1 | Complete dogfood cycle, fix issues |
-| Day 2 | Set up SWE-bench, run warmup |
-| Day 3-4 | Run minimal experiment (45 tasks) |
-| Day 5 | Analysis, write results |
+**Total**: ~12 days, 35 tasks, ~$30-50
+
+### Critical Path
+
+```
+Day 1: SWE-bench loader working
+       └─ Can load and present tasks
+Day 2: Async runner working
+       └─ Can run Claude on task, get pass/fail
+Day 5: Retrospection capturing useful data
+       └─ Structured JSON with what_worked/failed
+Day 8: Meta-retrospection finding real patterns
+       └─ At least 1 actionable pattern from Batch 1
+Day 11: Full loop showing improvement
+       └─ Batch 3 success rate > Batch 0
+```
 
 ---
 
@@ -590,7 +832,7 @@ If minimal shows signal (success rate delta > 10%):
 
 ```
 .claude/
-├── intent.yaml                          # NEW: Project goals
+├── intent.yaml                          # NEW: Project goals (drift detection)
 ├── cache/
 │   ├── retrospections/                  # NEW: Session reflections
 │   │   └── YYYY-MM-DD_HH-MM-SS_<id>.json
@@ -605,22 +847,27 @@ If minimal shows signal (success rate delta > 10%):
     └── session-end-retrospect.sh        # NEW (optional)
 
 scripts/
+├── swebench_loader.py                   # NEW: Load SWE-bench tasks
+├── async_runner.py                      # NEW: Run Claude async on task
 ├── retrospect.py                        # NEW: Capture reflections
 ├── meta_retrospect.py                   # NEW: Batch analysis
-├── run_experiment.py                    # NEW: SWE-bench runner
 └── artifact_schema.sql                  # UPDATED: Add retrospections
 
 docs/meta-learning/
 ├── concept-note.md                      # Existing
 ├── product-spec.md                      # Existing
-└── experiment-results.md                # NEW: After Phase 4
+└── experiment-results.md                # NEW: After batches complete
 
 experiments/
-└── exp-001/                             # NEW: Experiment data
-    ├── config.json
-    ├── tasks/
-    ├── retrospections/
-    └── analysis/
+└── batch-XXX/                           # NEW: Per-batch data
+    ├── config.json                      # Batch configuration
+    ├── tasks/                           # Task assignments
+    │   └── <task-id>/
+    │       ├── checkpoints/             # Mid-task reflections
+    │       └── result.json              # Final outcome
+    ├── retrospections/                  # End-of-task reflections
+    └── meta/                            # Batch-level analysis
+        └── patterns.json
 ```
 
 ---
