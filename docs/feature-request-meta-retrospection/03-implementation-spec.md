@@ -2,195 +2,287 @@
 
 ## Overview
 
-Technical architecture, data schemas, and code patterns for the meta-retrospection system.
+This document describes how to integrate the three-workspace meta-retrospection architecture with the **existing** Continuous-Claude-v2 infrastructure. The system leverages existing hooks, skills, scripts, and ledger patterns rather than building from scratch.
 
-## System Architecture
+## Existing Infrastructure Inventory
 
-### Data Flow
+Before designing integration, we assessed what already exists:
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                    CLAUDE CODE SESSION                           │
-│                                                                  │
-│  1. SessionStart hook loads prior learnings                      │
-│  2. Worker executes task                                         │
-│  3. Tests run                                                    │
-│  4. /retrospect (same session) → JSON                            │
-│                                                                  │
-│  Output: .claude/cache/retrospections/<session>.json             │
-└──────────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    META-RETROSPECTOR                             │
-│                    (every 5-10 sessions)                         │
-│                                                                  │
-│  Input: Batch of retrospection JSONs                             │
-│  Process: Trend detection, drift scoring, pattern matching       │
-│  Output: .claude/cache/meta-retrospections/<batch>.json          │
-│                                                                  │
-│  Triggers: Manual /meta-retrospect OR automatic after N sessions │
-└──────────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    HUMAN REVIEW                                  │
-│                                                                  │
-│  Reads: Dashboard report (markdown)                              │
-│  Updates: .claude/meta/human-policy.yaml                         │
-│  Approves: Rule updates, threshold changes                       │
-└──────────────────────────────────────────────────────────────────┘
-```
+| Category | Count | Key Items |
+|----------|-------|-----------|
+| **Skills** | 34 | `compound-learnings`, `braintrust-analyze`, `recall-reasoning` |
+| **Agents** | 14 | `braintrust-analyst`, `session-analyst`, `plan-agent` |
+| **Hooks** | 9 | SessionStart, SessionEnd, PostToolUse, PreCompact, etc. |
+| **Plugins** | 1 | Braintrust tracing (full session observability) |
+| **Scripts** | 17 | `braintrust_analyze.py`, `artifact_index.py`, etc. |
+| **Ledgers** | Active | `thoughts/ledgers/CONTINUITY_CLAUDE-*.md` |
 
-## File Structure
+## Three-Workspace Architecture
 
 ```
-.claude/
-├── skills/
-│   ├── retrospect/
-│   │   └── SKILL.md              # /retrospect command
-│   └── meta-retrospect/
-│       └── SKILL.md              # /meta-retrospect command
-├── meta/
-│   ├── human-policy.yaml         # Human-defined intent & thresholds
-│   └── retrospector-config.json  # Meta-tuned settings
-├── cache/
-│   ├── retrospections/
-│   │   └── <session_id>.json     # Individual retrospection outputs
-│   ├── meta-retrospections/
-│   │   └── <batch_id>.json       # Batch analysis outputs
-│   └── experiments/
-│       └── traces.db             # Local SQLite tracing
+Continuous-Claude-v2/                    # Root repository
+├── CLAUDE.md                            # Root guide (add workspace docs)
+├── .claude/                             # EXISTING infrastructure
+│   ├── skills/                          # 34 existing skills
+│   ├── hooks/                           # 9 existing hooks
+│   ├── agents/                          # 14 existing agents
+│   ├── plugins/braintrust-tracing/      # Session observability
+│   └── settings.json                    # Hook registration
+│
+├── scripts/                             # EXISTING script patterns
+│   ├── braintrust_analyze.py            # Session analysis (55KB)
+│   └── ...                              # 17 scripts total
+│
+├── worker/                              # NEW: Worker workspace
+│   ├── CLAUDE.md                        # Worker-specific instructions
+│   └── .claude/
+│       └── cache/sessions/              # Session logs for retrospector
+│
+├── retrospective/                       # NEW: Retrospector workspace
+│   ├── CLAUDE.md                        # Retrospector instructions
+│   ├── .claude/                         # Minimal config
+│   └── retrospections/                  # Per-session JSON outputs
+│
+└── meta-retrospective/                  # NEW: Meta-retrospector workspace
+    ├── CLAUDE.md                        # Meta-retrospector instructions
+    ├── .claude/                         # Minimal config
+    ├── human-policy.yaml                # Human intent & thresholds
+    ├── dashboard.md                     # System health summary
+    └── analysis/                        # Batch analysis outputs
+```
 
-scripts/
-├── retrospect.py                 # Retrospection logic
-├── meta_retrospect.py            # Meta-retrospection logic
-├── human_dashboard.py            # Generate reports
-└── trace_decision.py             # Audit trail viewer
+## Integration with Existing Components
 
-src/meta/
-├── schemas.py                    # Pydantic models
-├── local_tracing.py              # SQLite tracing (Braintrust alternative)
-├── local_embeddings.py           # Drift detection embeddings
-└── trend_detection.py            # Statistical analysis
+### 1. Leveraging Existing Hooks
+
+The existing hook system provides session lifecycle management:
+
+| Existing Hook | Integration Point |
+|---------------|-------------------|
+| **SessionStart** | Load prior learnings from retrospections |
+| **SessionEnd** | Trigger session logging for retrospector |
+| **PreCompact** | Auto-generate handoff (already exists) |
+| **PostToolUse** | Track file edits and test results (already exists) |
+
+**New hooks to add:**
+
+```json
+// Add to .claude/settings.json
+{
+  "hooks": {
+    "SessionEnd": [
+      // Existing hooks...
+      {
+        "hooks": [{
+          "type": "command",
+          "command": "$HOME/.claude/hooks/session-log-for-retrospector.sh"
+        }]
+      }
+    ]
+  }
+}
+```
+
+### 2. Leveraging Existing Skills
+
+| Existing Skill | How It Helps |
+|----------------|--------------|
+| **braintrust-analyze** | Already analyzes sessions, extracts learnings |
+| **compound-learnings** | Transforms learnings into permanent capabilities |
+| **recall-reasoning** | Searches past decisions and approaches |
+| **continuity_ledger** | Preserves state across `/clear` |
+
+**New skills to add:**
+
+| New Skill | Location | Purpose |
+|-----------|----------|---------|
+| `/retrospect` | `retrospective/.claude/skills/` | Analyze specific worker session |
+| `/meta-retrospect` | `meta-retrospective/.claude/skills/` | Analyze batch of retrospections |
+
+### 3. Leveraging Existing Scripts
+
+The `braintrust_analyze.py` script (55KB) already provides:
+- Session replay and analysis
+- Loop detection
+- Token trends
+- Learning extraction
+
+**Integration approach:** Create thin wrapper scripts that:
+1. Call `braintrust_analyze.py` for raw session data
+2. Transform output into retrospection JSON schema
+3. Write to `retrospective/retrospections/`
+
+```python
+# scripts/retrospect.py - New script
+"""
+DESCRIPTION: Retrospect on a worker session
+USAGE: uv run python -m runtime.harness scripts/retrospect.py --session-id <id>
+"""
+
+import subprocess
+import json
+from pathlib import Path
+
+async def main():
+    args = parse_args()
+
+    # Use existing braintrust_analyze for session data
+    result = subprocess.run([
+        "uv", "run", "python", "-m", "runtime.harness",
+        "scripts/braintrust_analyze.py",
+        "--session", args.session_id,
+        "--output-json"
+    ], capture_output=True, text=True)
+
+    session_data = json.loads(result.stdout)
+
+    # Transform to retrospection schema
+    retrospection = transform_to_retrospection(session_data)
+
+    # Write to retrospections directory
+    output_path = Path(f"retrospective/retrospections/{args.session_id}.json")
+    output_path.write_text(json.dumps(retrospection, indent=2))
+```
+
+### 4. Leveraging Existing Ledgers
+
+Continuity ledgers survive `/clear` and preserve session state. The meta-retrospection system extends this pattern:
+
+| Existing Pattern | Extended Usage |
+|------------------|----------------|
+| `thoughts/ledgers/CONTINUITY_CLAUDE-*.md` | Session-to-session state |
+| `thoughts/shared/handoffs/` | Cross-session context |
+| **NEW:** `retrospective/retrospections/*.json` | Structured learning extraction |
+| **NEW:** `meta-retrospective/analysis/*.json` | Trend analysis |
+
+## Running Each Layer
+
+### Worker Session
+
+```bash
+cd Continuous-Claude-v2
+claude worker/
+```
+
+**What the worker CLAUDE.md should contain:**
+- Focus on task execution only
+- No awareness of retrospection (separation of concerns)
+- SessionEnd hook writes session metadata to `worker/.claude/cache/sessions/`
+
+**Session log format** (written by hook):
+```json
+{
+  "session_id": "work-2025-12-31-abc123",
+  "started_at": "2025-12-31T10:00:00Z",
+  "ended_at": "2025-12-31T10:30:00Z",
+  "task_description": "Fix authentication bug",
+  "files_modified": ["src/auth/login.ts"],
+  "test_results": {"passed": 15, "failed": 0},
+  "outcome": "success",
+  "braintrust_trace_id": "trace-xyz"
+}
+```
+
+### Retrospector Session
+
+```bash
+cd Continuous-Claude-v2
+claude retrospective/ --add-dir worker/
+```
+
+**What the retrospective CLAUDE.md should contain:**
+- Session ID is REQUIRED (`/retrospect <session-id>`)
+- Reads from `worker/.claude/cache/sessions/`
+- Writes to `retrospections/<session-id>.json`
+- Can also query Braintrust via existing `braintrust_analyze.py`
+
+**Key commands:**
+```bash
+# Inside retrospective session:
+/retrospect work-2025-12-31-abc123    # Analyze specific session
+/retrospect --latest                   # Analyze most recent
+/retrospect --list                     # List available sessions
+```
+
+### Meta-Retrospector Session
+
+```bash
+cd Continuous-Claude-v2
+claude meta-retrospective/ --add-dir retrospective/ --add-dir worker/
+```
+
+**What the meta-retrospective CLAUDE.md should contain:**
+- Analyzes batches of retrospections
+- Reads from `retrospective/retrospections/*.json`
+- Reads policy from `human-policy.yaml`
+- Writes to `analysis/<batch-id>.json` and `dashboard.md`
+
+**Key commands:**
+```bash
+# Inside meta-retrospective session:
+/meta-retrospect                       # Analyze all
+/meta-retrospect --last 10             # Last 10 sessions
+/meta-retrospect --since 2025-12-01    # Since date
 ```
 
 ## Data Schemas
 
 ### Retrospection Output
 
-```python
-# src/meta/schemas.py
-
-from pydantic import BaseModel
-from datetime import datetime
-from typing import Optional
-from enum import Enum
-
-class Outcome(str, Enum):
-    SUCCESS = "success"
-    PARTIAL = "partial"
-    FAILURE = "failure"
-
-class LearningCategory(str, Enum):
-    UNDERSTANDING = "understanding"  # Misread requirements, wrong scope
-    IMPLEMENTATION = "implementation"  # Syntax, types, logic errors
-    PROCESS = "process"  # Premature commits, incomplete testing
-
-class Learning(BaseModel):
-    id: str  # UUID
-    category: LearningCategory
-    insight: str  # Specific, actionable lesson
-    confidence: float  # 0.0-1.0
-    applied: bool = False  # Updated in subsequent sessions
-
-class Failure(BaseModel):
-    mode: str  # From taxonomy (e.g., "misread_requirements")
-    description: str
-    root_cause: str
-    prevention: str  # What would prevent this next time
-
-class Retrospection(BaseModel):
-    session_id: str
-    task_id: str
-    timestamp: datetime
-    intent: str  # What was the goal?
-    outcome: Outcome
-    learnings: list[Learning]
-    failures: list[Failure]
-    learnings_applied: list[str]  # IDs of prior learnings used
-    time_spent_minutes: int
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "session_id": "abc-123",
-                "task_id": "django__django-15498",
-                "timestamp": "2025-01-15T10:30:00Z",
-                "intent": "Fix QuerySet filter bug",
-                "outcome": "success",
-                "learnings": [{
-                    "id": "learn-001",
-                    "category": "implementation",
-                    "insight": "Django ORM requires explicit Q objects for OR conditions",
-                    "confidence": 0.9,
-                    "applied": False
-                }],
-                "failures": [],
-                "learnings_applied": ["learn-prev-042"],
-                "time_spent_minutes": 25
-            }
-        }
+```json
+{
+  "session_id": "work-2025-12-31-abc123",
+  "timestamp": "2025-12-31T11:00:00Z",
+  "intent": "Fix authentication bug in login flow",
+  "outcome": "success",
+  "learnings": [
+    {
+      "id": "learn-001",
+      "category": "implementation",
+      "insight": "JWT validation should check expiry before signature",
+      "confidence": 0.9
+    }
+  ],
+  "failures": [],
+  "learnings_applied": ["learn-prev-042"],
+  "braintrust_trace_id": "trace-xyz"
+}
 ```
 
 ### Meta-Retrospection Output
 
-```python
-class TrendDirection(str, Enum):
-    IMPROVING = "improving"
-    STABLE = "stable"
-    DEGRADING = "degrading"
-
-class RecurringIssue(BaseModel):
-    failure_mode: str
-    count: int
-    sessions: list[str]  # Session IDs where this occurred
-    suggested_fix: str
-
-class MetaRetrospection(BaseModel):
-    batch_id: str
-    timestamp: datetime
-    sessions_analyzed: list[str]
-
-    # Trend analysis
-    success_rate: float
-    success_trend: TrendDirection
-
-    # Issue detection
-    recurring_issues: list[RecurringIssue]
-    recurring_issue_rate: float  # % of failures that are recurring
-
-    # Learning effectiveness
-    learning_application_rate: float
-    learnings_total: int
-    learnings_applied: int
-
-    # Drift detection
-    drift_score: float  # 0.0-1.0
-    drift_details: str  # Explanation
-
-    # Recommendations
-    recommendations: list[str]
-
-    # Meta
-    policy_version: str  # Which human-policy.yaml was active
+```json
+{
+  "batch_id": "meta-2025-12-31-001",
+  "timestamp": "2025-12-31T12:00:00Z",
+  "sessions_analyzed": ["work-2025-12-29-xxx", "work-2025-12-30-yyy"],
+  "metrics": {
+    "success_rate": 0.85,
+    "success_trend": "improving",
+    "learning_application_rate": 0.72,
+    "recurring_issue_rate": 0.15
+  },
+  "recurring_issues": [
+    {
+      "mode": "implementation/logic_error",
+      "count": 3,
+      "sessions": ["work-2025-12-29-xxx", "work-2025-12-30-yyy"],
+      "suggested_action": "Add property-based testing"
+    }
+  ],
+  "drift": {
+    "score": 0.2,
+    "interpretation": "aligned"
+  },
+  "recommendations": ["Add pre-implementation checklist"],
+  "alerts": []
+}
 ```
 
-### Human Policy Configuration
+### Human Policy
 
 ```yaml
-# .claude/meta/human-policy.yaml
-
+# meta-retrospective/human-policy.yaml
 version: "1.0"
 
 intent:
@@ -199,422 +291,189 @@ intent:
     - "Learn transferable patterns"
     - "Reduce recurring failures"
 
-  constraints:
-    - "Prefer simple solutions over clever ones"
-    - "Test before marking complete"
-    - "Don't introduce regressions"
-
 thresholds:
   alert_on_drift_score: 0.3
   alert_on_recurring_issues: 3
   min_learning_application_rate: 0.5
-  max_recurring_issue_rate: 0.25
 
 automation:
-  meta_retrospect_every_n_sessions: 5
-  auto_apply_high_confidence_learnings: true
-  high_confidence_threshold: 0.8
-
-review:
-  frequency: "weekly"
-  sample_rate: 0.05  # Spot-check 5% of sessions
+  meta_retrospect_after_n_sessions: 5
 ```
 
-## Core Components
+## Implementation Phases
 
-### Local Tracing (SQLite)
+### Phase 1: Create Workspace Directories
 
-Replaces Braintrust for experiment logging:
-
-```python
-# src/meta/local_tracing.py
-
-import sqlite3
-import json
-from datetime import datetime
-from pathlib import Path
-from typing import Optional
-
-class LocalTracer:
-    """Zero-cost tracing using SQLite."""
-
-    def __init__(self, db_path: str = ".claude/cache/experiments/traces.db"):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
-
-    def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS sessions (
-                    session_id TEXT PRIMARY KEY,
-                    experiment_id TEXT,
-                    phase INTEGER,
-                    task_id TEXT,
-                    started_at TEXT,
-                    completed_at TEXT,
-                    success INTEGER,
-                    metadata TEXT
-                );
-
-                CREATE TABLE IF NOT EXISTS retrospections (
-                    session_id TEXT PRIMARY KEY,
-                    retrospection_json TEXT,
-                    timestamp TEXT,
-                    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_sessions_experiment
-                ON sessions(experiment_id);
-
-                CREATE INDEX IF NOT EXISTS idx_sessions_phase
-                ON sessions(phase);
-            """)
-
-    def start_session(self, experiment_id: str, phase: int, task_id: str) -> str:
-        session_id = f"{experiment_id}-p{phase}-{task_id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT INTO sessions (session_id, experiment_id, phase, task_id, started_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (session_id, experiment_id, phase, task_id, datetime.now().isoformat()))
-        return session_id
-
-    def end_session(self, session_id: str, success: bool, metadata: dict = None):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                UPDATE sessions
-                SET completed_at = ?, success = ?, metadata = ?
-                WHERE session_id = ?
-            """, (datetime.now().isoformat(), int(success), json.dumps(metadata or {}), session_id))
-
-    def save_retrospection(self, session_id: str, retrospection: dict):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO retrospections (session_id, retrospection_json, timestamp)
-                VALUES (?, ?, ?)
-            """, (session_id, json.dumps(retrospection), datetime.now().isoformat()))
-
-    def get_phase_stats(self, experiment_id: str, phase: int) -> dict:
-        with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute("""
-                SELECT
-                    COUNT(*) as total,
-                    SUM(success) as successes
-                FROM sessions
-                WHERE experiment_id = ? AND phase = ?
-            """, (experiment_id, phase)).fetchone()
-            return {
-                'total': row[0],
-                'successes': row[1] or 0,
-                'success_rate': (row[1] or 0) / row[0] if row[0] else 0
-            }
-
-    def get_retrospections_for_batch(self, limit: int = 10) -> list[dict]:
-        with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute("""
-                SELECT retrospection_json FROM retrospections
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (limit,)).fetchall()
-            return [json.loads(row[0]) for row in rows]
-```
-
-### Local Embeddings (Drift Detection)
-
-```python
-# src/meta/local_embeddings.py
-
-import numpy as np
-from typing import Optional
-
-class LocalEmbedder:
-    """
-    Local embeddings for drift detection.
-    Uses sentence-transformers (downloads once, runs locally).
-    """
-
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
-        try:
-            from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(model_name)
-            self._available = True
-        except ImportError:
-            self._available = False
-            self.model = None
-
-    @property
-    def available(self) -> bool:
-        return self._available
-
-    def embed(self, texts: list[str]) -> np.ndarray:
-        if not self._available:
-            raise RuntimeError("sentence-transformers not installed")
-        return self.model.encode(texts, normalize_embeddings=True)
-
-    def similarity(self, text1: str, text2: str) -> float:
-        embeddings = self.embed([text1, text2])
-        return float(np.dot(embeddings[0], embeddings[1]))
-
-    def drift_score(self, intent: str, learnings: list[str]) -> float:
-        """
-        Calculate how far learnings have drifted from intent.
-        Returns 0.0 (perfectly aligned) to 1.0 (completely drifted).
-        """
-        if not learnings:
-            return 0.0
-
-        if not self._available:
-            # Fallback: keyword overlap
-            return self._keyword_drift(intent, learnings)
-
-        intent_emb = self.embed([intent])[0]
-        learning_embs = self.embed(learnings)
-
-        similarities = [float(np.dot(intent_emb, l_emb)) for l_emb in learning_embs]
-        avg_similarity = np.mean(similarities)
-
-        # Convert similarity (0-1) to drift (0-1)
-        return max(0.0, min(1.0, 1.0 - avg_similarity))
-
-    def _keyword_drift(self, intent: str, learnings: list[str]) -> float:
-        """Fallback drift detection using keyword overlap."""
-        intent_words = set(intent.lower().split())
-        learning_words = set()
-        for learning in learnings:
-            learning_words.update(learning.lower().split())
-
-        if not intent_words:
-            return 0.0
-
-        overlap = len(intent_words & learning_words)
-        return 1.0 - (overlap / len(intent_words))
-```
-
-### Trend Detection
-
-```python
-# src/meta/trend_detection.py
-
-from collections import Counter
-from typing import Optional
-from .schemas import Retrospection, TrendDirection, RecurringIssue
-
-def detect_trend(success_rates: list[float], window: int = 3) -> TrendDirection:
-    """
-    Detect if success rate is improving, stable, or degrading.
-    Uses simple moving average comparison.
-    """
-    if len(success_rates) < window * 2:
-        return TrendDirection.STABLE
-
-    early = sum(success_rates[:window]) / window
-    late = sum(success_rates[-window:]) / window
-
-    diff = late - early
-    if diff > 0.1:
-        return TrendDirection.IMPROVING
-    elif diff < -0.1:
-        return TrendDirection.DEGRADING
-    else:
-        return TrendDirection.STABLE
-
-def find_recurring_issues(
-    retrospections: list[Retrospection],
-    threshold: int = 3
-) -> list[RecurringIssue]:
-    """
-    Find failure modes that appear 3+ times.
-    """
-    mode_sessions: dict[str, list[str]] = {}
-
-    for retro in retrospections:
-        for failure in retro.failures:
-            if failure.mode not in mode_sessions:
-                mode_sessions[failure.mode] = []
-            mode_sessions[failure.mode].append(retro.session_id)
-
-    recurring = []
-    for mode, sessions in mode_sessions.items():
-        if len(sessions) >= threshold:
-            recurring.append(RecurringIssue(
-                failure_mode=mode,
-                count=len(sessions),
-                sessions=sessions,
-                suggested_fix=f"Add check for {mode} before execution"
-            ))
-
-    return sorted(recurring, key=lambda x: x.count, reverse=True)
-
-def calculate_application_rate(retrospections: list[Retrospection]) -> float:
-    """
-    What % of available learnings were actually applied?
-    """
-    total_available = 0
-    total_applied = 0
-
-    available_learnings = set()
-    for retro in retrospections:
-        # Count how many available learnings were applied
-        applied = len([l for l in retro.learnings_applied if l in available_learnings])
-        total_applied += applied
-        total_available += len(available_learnings)
-
-        # Add this session's learnings to available pool
-        for learning in retro.learnings:
-            available_learnings.add(learning.id)
-
-    return total_applied / total_available if total_available else 0.0
-```
-
-## Failure Mode Taxonomy
-
-Consistent categorization for all failures:
-
-```python
-# src/meta/failure_modes.py
-
-FAILURE_TAXONOMY = {
-    "understanding": {
-        "misread_requirements": "Solved wrong problem",
-        "missed_edge_case": "Didn't handle boundary condition",
-        "wrong_scope": "Changed too much or too little",
-    },
-    "implementation": {
-        "syntax_error": "Code doesn't parse",
-        "type_error": "Type mismatch",
-        "logic_error": "Code runs but wrong output",
-        "import_error": "Missing or wrong imports",
-    },
-    "environment": {
-        "test_flakiness": "Test passes/fails intermittently",
-        "setup_failure": "Couldn't configure environment",
-        "timeout": "Exceeded time limit",
-    },
-    "process": {
-        "premature_commit": "Submitted before testing",
-        "incomplete_fix": "Partial solution",
-        "regression": "Fixed one thing, broke another",
-    },
-}
-
-def classify_failure(description: str) -> str:
-    """
-    Auto-classify failure based on description.
-    Returns failure mode key like 'logic_error'.
-    """
-    description_lower = description.lower()
-
-    # Simple keyword matching
-    if "syntax" in description_lower or "parse" in description_lower:
-        return "syntax_error"
-    if "type" in description_lower:
-        return "type_error"
-    if "import" in description_lower:
-        return "import_error"
-    if "timeout" in description_lower:
-        return "timeout"
-    if "flaky" in description_lower or "intermittent" in description_lower:
-        return "test_flakiness"
-    if "wrong" in description_lower and "output" in description_lower:
-        return "logic_error"
-    if "scope" in description_lower:
-        return "wrong_scope"
-    if "edge" in description_lower or "boundary" in description_lower:
-        return "missed_edge_case"
-
-    return "logic_error"  # Default
-```
-
-## Integration Points
-
-### SessionStart Hook (Load Learnings)
+Create the three workspaces with CLAUDE.md files:
 
 ```bash
-# .claude/hooks/session-start-learnings.sh
-
-#!/bin/bash
-# Load recent learnings into session context
-
-LEARNINGS_DIR=".claude/cache/retrospections"
-if [ -d "$LEARNINGS_DIR" ]; then
-    # Get last 5 retrospections
-    RECENT=$(ls -t "$LEARNINGS_DIR"/*.json 2>/dev/null | head -5)
-    if [ -n "$RECENT" ]; then
-        echo "# Recent Learnings"
-        for f in $RECENT; do
-            jq -r '.learnings[] | "- [\(.category)] \(.insight)"' "$f" 2>/dev/null
-        done
-    fi
-fi
+mkdir -p worker/.claude/cache/sessions
+mkdir -p retrospective/.claude retrospective/retrospections
+mkdir -p meta-retrospective/.claude meta-retrospective/analysis
 ```
 
-### Retrospect Skill
+Each CLAUDE.md should:
+1. Explain the workspace's role
+2. Define available commands
+3. Specify input/output locations
+4. Reference integration with existing infrastructure
+
+### Phase 2: Add Session Logging Hook
+
+Extend existing hooks to write session metadata:
+
+```typescript
+// .claude/hooks/src/session-log-for-retrospector.ts
+import { writeFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
+
+interface SessionLog {
+  session_id: string;
+  started_at: string;
+  ended_at: string;
+  task_description: string;
+  files_modified: string[];
+  outcome: 'success' | 'partial' | 'failure';
+}
+
+async function main() {
+  const input = JSON.parse(await readStdin());
+
+  const sessionLog: SessionLog = {
+    session_id: `work-${new Date().toISOString().slice(0,10)}-${randomId()}`,
+    started_at: input.started_at,
+    ended_at: new Date().toISOString(),
+    task_description: extractTaskDescription(input.transcript_path),
+    files_modified: getModifiedFiles(),
+    outcome: determineOutcome(input)
+  };
+
+  const outputDir = join(process.cwd(), 'worker/.claude/cache/sessions');
+  mkdirSync(outputDir, { recursive: true });
+  writeFileSync(
+    join(outputDir, `${sessionLog.session_id}.json`),
+    JSON.stringify(sessionLog, indent=2)
+  );
+}
+```
+
+### Phase 3: Create /retrospect Skill
+
+Add skill to `retrospective/.claude/skills/retrospect/SKILL.md`:
 
 ```markdown
-# .claude/skills/retrospect/SKILL.md
 ---
-description: Analyze the current session and extract structured learnings
+description: Analyze a worker session and extract learnings
 ---
 
-# Retrospect
+# /retrospect
 
-Perform end-of-session retrospection to extract learnings.
+Analyze a completed worker session.
 
-## When to Use
-- At the end of a task/session
-- After fixing a bug
-- After completing a feature
-- When asked to "analyze this session" or "what did we learn"
+## Usage
+
+```bash
+/retrospect <session-id>    # Analyze specific session
+/retrospect --latest        # Analyze most recent
+/retrospect --list          # Show available sessions
+```
 
 ## Process
 
-1. **Summarize intent**: What was the goal?
-2. **Assess outcome**: success | partial | failure
-3. **Extract learnings**: What insights are transferable?
-4. **Classify failures**: Use taxonomy (understanding/implementation/process)
-5. **Output JSON**: Save to `.claude/cache/retrospections/`
-
-## Output Format
-
-```json
-{
-  "session_id": "<from context>",
-  "task_id": "<if available>",
-  "timestamp": "<ISO format>",
-  "intent": "<goal statement>",
-  "outcome": "success | partial | failure",
-  "learnings": [{
-    "id": "<uuid>",
-    "category": "understanding | implementation | process",
-    "insight": "<specific, actionable lesson>",
-    "confidence": 0.8
-  }],
-  "failures": [{
-    "mode": "<from taxonomy>",
-    "description": "<what happened>",
-    "root_cause": "<why>",
-    "prevention": "<how to avoid>"
-  }],
-  "time_spent_minutes": 30
-}
+1. Load session from `worker/.claude/cache/sessions/<id>.json`
+2. Optionally query Braintrust for detailed trace
+3. Assess outcome (success/partial/failure)
+4. Extract learnings with categories
+5. Identify failures with root cause
+6. Write to `retrospections/<session-id>.json`
 ```
 
-Save to: `.claude/cache/retrospections/<session_id>.json`
-```
+### Phase 4: Create /meta-retrospect Skill
 
-## Dependencies
+Add skill to `meta-retrospective/.claude/skills/meta-retrospect/SKILL.md`:
 
-**Required:**
-- Python 3.11+
-- Pydantic
-- SQLite (built-in)
+```markdown
+---
+description: Analyze patterns across multiple retrospections
+---
 
-**Optional (for drift detection):**
+# /meta-retrospect
+
+Analyze batch of retrospections to detect trends.
+
+## Usage
+
 ```bash
-pip install sentence-transformers
-# or
-uv add sentence-transformers
+/meta-retrospect             # Analyze all
+/meta-retrospect --last 10   # Last 10 sessions
 ```
 
-Model downloads once (~80MB), runs locally thereafter.
+## Process
+
+1. Load retrospections from `retrospective/retrospections/*.json`
+2. Load policy from `human-policy.yaml`
+3. Calculate metrics (success rate, trends)
+4. Detect recurring issues (3+ occurrences)
+5. Calculate drift score
+6. Generate recommendations
+7. Check alert thresholds
+8. Write to `analysis/<batch-id>.json`
+9. Update `dashboard.md`
+```
+
+### Phase 5: Integrate with Existing Skills
+
+Connect to existing infrastructure:
+
+| Existing Skill | Integration |
+|----------------|-------------|
+| `braintrust-analyze` | Call from /retrospect for detailed session data |
+| `compound-learnings` | Run after /meta-retrospect to persist patterns |
+| `recall-reasoning` | Feed retrospection learnings into search index |
+
+## Visibility Matrix
+
+| Layer | worker/ | retrospective/ | meta-retrospective/ |
+|-------|---------|----------------|---------------------|
+| Worker | ✅ Read/Write | ❌ | ❌ |
+| Retrospector | ✅ Read | ✅ Read/Write | ❌ |
+| Meta-Retrospector | ✅ Read | ✅ Read | ✅ Read/Write |
+
+## Key Integration Principles
+
+1. **Leverage existing hooks** — Don't rewrite SessionEnd, extend it
+2. **Leverage existing scripts** — Call `braintrust_analyze.py` for session data
+3. **Leverage existing skills** — Use `compound-learnings` to persist insights
+4. **Leverage existing ledgers** — Retrospections complement, not replace, ledgers
+5. **Session ID required** — Retrospector needs explicit session ID (no guessing)
+6. **`--add-dir` for visibility** — Higher layers see lower layers via this flag
+7. **JSON as interface** — Layers communicate through structured files
+8. **Claude Code orchestrates** — All thinking happens in Claude Code sessions
+
+## Files to Create
+
+| File | Purpose |
+|------|---------|
+| `worker/CLAUDE.md` | Worker workspace instructions |
+| `retrospective/CLAUDE.md` | Retrospector instructions with /retrospect skill |
+| `meta-retrospective/CLAUDE.md` | Meta-retrospector instructions with /meta-retrospect skill |
+| `meta-retrospective/human-policy.yaml` | Human intent and thresholds |
+| `meta-retrospective/dashboard.md` | System health summary (updated by /meta-retrospect) |
+| `.claude/hooks/src/session-log-for-retrospector.ts` | Session logging hook |
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `CLAUDE.md` (root) | Add section on three-workspace architecture |
+| `.claude/settings.json` | Register new SessionEnd hook |
+
+## Summary
+
+The meta-retrospection system integrates with Continuous-Claude-v2 by:
+1. Using **existing hooks** for session lifecycle
+2. Using **existing scripts** (`braintrust_analyze.py`) for session data
+3. Using **existing skills** (`compound-learnings`) to persist learnings
+4. Adding **three workspaces** with focused CLAUDE.md files
+5. Using **`--add-dir`** for layer visibility
+6. Requiring **explicit session ID** for retrospection
