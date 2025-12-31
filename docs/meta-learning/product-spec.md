@@ -1,1107 +1,742 @@
 # Meta-Learning System: Product Specification
 
-## Overview
+## Vision
 
-This specification defines the meta-learning system for Continuous-Claude-v2. The system enables Claude Code to learn from past sessions through structured retrospection and batch analysis.
+**A coding assistant that gets better every session—not through magic, but through structured reflection and human guidance.**
 
-**Scope:** Local-only implementation using existing free infrastructure. No external paid services (Braintrust, etc.).
+Today, each Claude Code session starts fresh. The same mistakes repeat. Learnings exist as scattered notes that nobody reads. Humans spend hours debugging outputs instead of building.
 
-**Integration Principle:** Extend existing components rather than create parallel systems.
-
-## Architecture Summary
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│ HUMAN LAYER                                                       │
-│ .claude/intent.yaml (goals) + policy thresholds                   │
-└──────────────────────────────────────────────────────────────────┘
-                              ↓
-┌──────────────────────────────────────────────────────────────────┐
-│ META-RETROSPECTOR                                                 │
-│ scripts/meta_retrospect.py → .claude/cache/meta/                  │
-│ Trigger: manual /meta-retrospect or every N sessions              │
-└──────────────────────────────────────────────────────────────────┘
-                              ↓
-┌──────────────────────────────────────────────────────────────────┐
-│ RETROSPECTOR                                                      │
-│ /retrospect skill → .claude/cache/retrospections/                 │
-│ Trigger: manual or SessionEnd hook                                │
-└──────────────────────────────────────────────────────────────────┘
-                              ↓
-┌──────────────────────────────────────────────────────────────────┐
-│ WORKER (existing Claude Code session)                             │
-│ Influenced by: .claude/rules/, .claude/skills/, ledgers           │
-└──────────────────────────────────────────────────────────────────┘
-```
+Tomorrow: Claude reflects on what worked and what didn't. Patterns surface automatically. Humans guide alignment with minimal effort. The system compounds knowledge over time.
 
 ---
 
-## Epic 1: Structured Retrospection (P0 - Foundation)
+## Users
 
-### Story 1.1: Retrospection Schema
+### Primary: The Developer
 
-**As a** system designer
-**I want** a well-defined schema for retrospection data
-**So that** downstream tools can process retrospections programmatically
+A software engineer using Claude Code daily. They want Claude to:
+- Stop making the same mistakes
+- Apply lessons from past sessions
+- Surface insights they wouldn't notice
+- Require minimal overhead to improve
 
-#### Schema Definition
+**Key frustration:** "I feel like I'm training Claude from scratch every session."
 
-```python
-# src/schemas/retrospection.py
+### Secondary: The Team Lead
 
-from pydantic import BaseModel
-from datetime import datetime
-from typing import Optional
-from enum import Enum
+Oversees multiple developers using Claude Code. They want:
+- Visibility into what Claude is learning
+- Confidence that Claude aligns with team practices
+- Ability to encode team knowledge into the system
 
-class OutcomeLevel(str, Enum):
-    SUCCEEDED = "succeeded"
-    PARTIAL_PLUS = "partial_plus"    # More worked than failed
-    PARTIAL_MINUS = "partial_minus"  # More failed than worked
-    FAILED = "failed"
-    UNKNOWN = "unknown"
-
-class Learning(BaseModel):
-    """A single actionable insight from the session."""
-    category: str                    # "approach", "tool_usage", "pattern", "anti_pattern"
-    description: str                 # What was learned
-    evidence: str                    # Specific example from session
-    actionable: bool                 # Can this become a rule/skill?
-    related_files: list[str] = []   # Files involved
-
-class Decision(BaseModel):
-    """A significant choice made during the session."""
-    description: str                 # What was decided
-    alternatives: list[str]          # What else was considered
-    rationale: str                   # Why this choice
-    confidence: str                  # "high", "medium", "low"
-
-class Retrospection(BaseModel):
-    """Structured output from session retrospection."""
-    # Identity
-    id: str                          # UUID
-    session_id: Optional[str]        # Links to handoff if exists
-    timestamp: datetime
-
-    # Context
-    task_summary: str                # What was the session trying to do
-    intent_alignment: str            # How well did this align with .claude/intent.yaml
-
-    # Assessment
-    outcome: OutcomeLevel
-    outcome_rationale: str           # Why this outcome level
-
-    # Learnings
-    what_worked: list[Learning]
-    what_failed: list[Learning]
-    key_decisions: list[Decision]
-
-    # Patterns (for compound-learnings consumption)
-    patterns: list[str]              # Reusable techniques identified
-    anti_patterns: list[str]         # Things to avoid
-
-    # Metadata
-    duration_minutes: Optional[int]
-    files_modified: list[str]
-    tools_used: list[str]
-
-    # Linking
-    handoff_id: Optional[str]        # If handoff was created
-    ledger_id: Optional[str]         # Active ledger during session
-    parent_meta_batch: Optional[str] # Set when processed by meta-retrospect
-```
-
-#### Tasks
-- [ ] Create `src/schemas/retrospection.py` with Pydantic models
-- [ ] Create `src/schemas/meta_retrospection.py` for batch analysis output
-- [ ] Add schema validation tests
-- [ ] Document schema in `docs/meta-learning/schemas.md`
-
-#### Acceptance Criteria
-- [ ] Schema handles all fields from existing learnings format
-- [ ] Schema validates with Pydantic (type safety)
-- [ ] Schema is extensible (new fields don't break old data)
-- [ ] Example retrospection JSON passes validation
-
-#### Integration Points
-- **Extends:** Current unstructured `.claude/cache/learnings/*.md` concept
-- **Consumed by:** `compound-learnings` skill, `meta_retrospect.py`, artifact index
-
-**Complexity:** Low (1-2 days)
+**Key frustration:** "Each team member teaches Claude different things. There's no shared learning."
 
 ---
 
-### Story 1.2: Retrospection Storage
+## Core Principles
 
-**As a** system
-**I want** retrospections stored in queryable format
-**So that** batch analysis can efficiently process them
+### 1. Humans Align, System Executes
 
-#### Storage Design
+Humans shouldn't fix individual outputs. That's low leverage. Instead:
+- Humans define what "good" looks like
+- System identifies patterns
+- Humans approve what becomes permanent
+- System applies learnings going forward
 
-```
-.claude/cache/retrospections/
-├── 2024-01-15_session-abc123.json    # Individual retrospections
-├── 2024-01-16_session-def456.json
-├── ...
-└── index.db                           # SQLite index
-```
+### 2. Reflection Over Surveillance
 
-#### SQLite Schema (extends existing artifact-index)
+We don't record everything and analyze it externally. Instead:
+- Claude reflects on its own work while context is fresh
+- Self-assessment captures nuance that logs miss
+- Human feedback calibrates over time
 
-```sql
--- Add to existing .claude/cache/artifact-index/context.db
+### 3. Batch Over Stream
 
-CREATE TABLE IF NOT EXISTS retrospections (
-    id TEXT PRIMARY KEY,
-    session_id TEXT,
-    timestamp TEXT,
-    task_summary TEXT,
-    outcome TEXT,
-    patterns TEXT,              -- JSON array
-    anti_patterns TEXT,         -- JSON array
-    handoff_id TEXT,
-    ledger_id TEXT,
-    meta_batch_id TEXT,         -- Set when processed
-    file_path TEXT,             -- Path to full JSON
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (handoff_id) REFERENCES handoffs(id)
-);
+Per-session analysis is noisy. Individual sessions vary. Instead:
+- Retrospections accumulate
+- Meta-analysis finds patterns across sessions
+- Statistical smoothing separates signal from noise
 
-CREATE INDEX idx_retro_outcome ON retrospections(outcome);
-CREATE INDEX idx_retro_timestamp ON retrospections(timestamp);
-CREATE INDEX idx_retro_meta_batch ON retrospections(meta_batch_id);
+### 4. Progressive Disclosure
 
--- FTS5 for searching retrospection content
-CREATE VIRTUAL TABLE IF NOT EXISTS retrospections_fts USING fts5(
-    task_summary,
-    patterns,
-    anti_patterns,
-    content='retrospections',
-    content_rowid='rowid'
-);
-```
-
-#### Tasks
-- [ ] Add retrospections table to `scripts/artifact_index.py`
-- [ ] Create `scripts/retrospection_store.py` for CRUD operations
-- [ ] Add migration script for existing installations
-- [ ] Create index rebuild utility
-
-#### Acceptance Criteria
-- [ ] Retrospections indexed on save (not batch)
-- [ ] FTS5 search returns relevant retrospections
-- [ ] Can query by outcome, date range, pattern keywords
-- [ ] Storage handles 1000+ retrospections without degradation
-
-#### Integration Points
-- **Extends:** Existing `artifact-index/context.db`
-- **Pattern:** Matches handoffs table structure
-
-**Complexity:** Medium (2-3 days)
+Don't overwhelm users with data. Instead:
+- Default: System runs quietly
+- Alert: Only when thresholds exceeded
+- Deep dive: Available on demand
 
 ---
 
-### Story 1.3: Retrospect Skill
+## User Journeys
 
-**As a** Claude Code user
-**I want** a `/retrospect` command
-**So that** I can capture structured learnings before ending a session
+### Journey 1: First-Time Setup
 
-#### Skill Design
+**Goal:** Configure the system to understand what success looks like.
 
-The retrospect skill triggers Claude's self-reflection and outputs structured JSON.
+**Duration:** 15-30 minutes, once per project
 
-**Key insight:** This is self-reflection, not external analysis. Claude reviews its own session while context is fresh.
+#### Scene
 
-#### Skill File
+Dev opens a new project. They've heard the meta-learning system can help Claude improve over time. They want to set it up.
 
-```markdown
-# .claude/skills/retrospect/SKILL.md
+#### Flow
 
----
-name: retrospect
-description: Capture structured learnings from current session via self-reflection
-allowed-tools: [Read, Write, Glob]
----
-
-# Retrospect
-
-Reflect on the current session and capture structured learnings.
-
-## When to Use
-
-- Before ending a significant work session
-- After completing a task (success or failure)
-- When asked to "capture learnings" or "what did we learn"
-- Automatically via SessionEnd hook (if enabled)
-
-## Process
-
-### Step 1: Load Context
-
-Read the intent file to understand alignment goals:
-
-```bash
-cat $CLAUDE_PROJECT_DIR/.claude/intent.yaml
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Dev: "Help me set up learning for this project"                 │
+│                                                                  │
+│  Claude: "I'll help you create an intent file. This tells me    │
+│  what success looks like for your project.                       │
+│                                                                  │
+│  Let's start with a few questions:                               │
+│                                                                  │
+│  1. What matters most in this codebase?                          │
+│     □ Correctness (tests pass, no bugs)                          │
+│     □ Performance (fast, efficient)                              │
+│     □ Maintainability (readable, documented)                     │
+│     □ Velocity (ship quickly)                                    │
+│                                                                  │
+│  Dev: "Correctness first, then maintainability"                  │
+│                                                                  │
+│  Claude: "Got it. What should I explicitly NOT optimize for?"    │
+│                                                                  │
+│  Dev: "Don't sacrifice correctness for speed. We're not in a    │
+│        rush, we need it right."                                  │
+│                                                                  │
+│  Claude: "When should I alert you about learning health?"        │
+│                                                                  │
+│  Dev: "If I keep making the same mistake 3+ times, tell me.      │
+│        Otherwise, just learn quietly."                           │
+│                                                                  │
+│  Claude: "Created .claude/intent.yaml with your preferences.     │
+│  I'll start learning from our sessions. You can check progress   │
+│  anytime with /dashboard."                                       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-Read the active ledger (if any) to understand session goals:
+#### Outcome
 
-```bash
-ls -t $CLAUDE_PROJECT_DIR/thoughts/ledgers/*.md | head -1 | xargs cat
-```
+- Intent file created with goals and thresholds
+- System knows what to optimize for
+- Dev feels setup was quick and painless
 
-### Step 2: Self-Reflect
+#### What Dev DOESN'T Have To Do
 
-Consider the following questions:
-
-**Task Summary:**
-- What was this session trying to accomplish?
-- How well did it align with the project intent?
-
-**Outcome Assessment:**
-- Did the task succeed, partially succeed, or fail?
-- What's the evidence for this assessment?
-
-**What Worked:**
-- Which approaches led to progress?
-- What tool usage was effective?
-- What patterns emerged that could be reused?
-
-**What Failed:**
-- Which approaches were abandoned? Why?
-- What blockers were encountered?
-- What would you do differently?
-
-**Key Decisions:**
-- What significant choices were made?
-- What alternatives were considered?
-- Why was this path chosen?
-
-**Patterns:**
-- What reusable techniques emerged?
-- What anti-patterns should be avoided?
-
-### Step 3: Generate Structured Output
-
-Create a JSON file following the Retrospection schema:
-
-```bash
-# Generate filename
-TIMESTAMP=$(date +%Y-%m-%d)
-SESSION_ID=$(echo $RANDOM | md5sum | head -c 8)
-OUTPUT_FILE="$CLAUDE_PROJECT_DIR/.claude/cache/retrospections/${TIMESTAMP}_session-${SESSION_ID}.json"
-```
-
-Write the retrospection JSON to this file.
-
-### Step 4: Index for Search
-
-```bash
-uv run python $CLAUDE_PROJECT_DIR/scripts/retrospection_store.py \
-    --index "$OUTPUT_FILE"
-```
-
-### Step 5: Report
-
-Summarize what was captured:
-
-```markdown
-## Retrospection Captured
-
-**File:** `.claude/cache/retrospections/YYYY-MM-DD_session-XXX.json`
-**Outcome:** [succeeded/partial/failed]
-**Patterns identified:** N
-**Anti-patterns identified:** M
-
-Key learnings:
-1. [First learning]
-2. [Second learning]
-...
-```
-
-## Quality Guidelines
-
-- Be specific: Reference actual files, tools, errors
-- Be honest: Don't inflate successes or hide failures
-- Be actionable: Patterns should be applicable to future sessions
-- Be concise: Each learning should be 1-2 sentences
-```
-
-#### Tasks
-- [ ] Create `.claude/skills/retrospect/SKILL.md`
-- [ ] Add triggers to `skill-rules.json` ("retrospect", "capture learnings", "what did we learn")
-- [ ] Create `scripts/retrospection_store.py` for indexing
-- [ ] Test skill produces valid schema output
-
-#### Acceptance Criteria
-- [ ] `/retrospect` command discoverable in Claude Code
-- [ ] Produces valid JSON matching schema
-- [ ] Indexes to SQLite on completion
-- [ ] Works without active ledger or handoff (graceful handling)
-- [ ] Self-reflection captures context external tools would miss
-
-#### Integration Points
-- **Uses:** Intent file (`.claude/intent.yaml`), active ledger
-- **Produces:** JSON in `.claude/cache/retrospections/`
-- **Indexes to:** `artifact-index/context.db`
-- **Consumed by:** `compound-learnings`, `meta-retrospect`
-
-**Complexity:** Medium (2-3 days)
+- Write YAML manually
+- Understand the underlying system
+- Configure every threshold
+- Read documentation first
 
 ---
 
-### Story 1.4: Outcome Tracking Integration
+### Journey 2: Regular Work Session
 
-**As a** system
-**I want** retrospection outcomes linked to handoffs
-**So that** we can correlate learnings with actual success/failure
+**Goal:** Do normal work. System learns in background.
 
-#### Design
+**Duration:** Normal session length. Zero overhead.
 
-Outcomes can come from two sources:
-1. **Self-assessed:** Claude's judgment during retrospection
-2. **Human-marked:** User override via existing `artifact_mark.py`
+#### Scene
 
-When a handoff exists, link the retrospection to it:
+Dev works on a feature. They use Claude for coding, debugging, refactoring. The session has ups and downs—some approaches work, others don't.
 
-```json
-{
-  "outcome": "partial_plus",
-  "outcome_source": "self_assessed",
-  "handoff_id": "task-implement-feature-2024-01-15",
-  "human_override": null
-}
+#### Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  [Normal work session - 45 minutes]                              │
+│                                                                  │
+│  Dev: "Add user authentication to the API"                       │
+│  Claude: [implements feature]                                    │
+│                                                                  │
+│  Dev: "Tests are failing"                                        │
+│  Claude: [debugs, tries approach A - doesn't work]               │
+│  Claude: [tries approach B - works]                              │
+│                                                                  │
+│  Dev: "Great, let's also add rate limiting"                      │
+│  Claude: [implements rate limiting]                              │
+│                                                                  │
+│  [Session ending]                                                │
+│                                                                  │
+│  Claude: "Before we wrap up, I'd like to capture what we         │
+│  learned. Takes 30 seconds. Want me to?"                         │
+│                                                                  │
+│  Dev: "Sure"                                                     │
+│                                                                  │
+│  [Claude reflects - see Journey 3]                               │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-When human marks handoff outcome, propagate to linked retrospection:
+#### Outcome
 
-```bash
-# Existing command
-python scripts/artifact_mark.py --handoff task-xyz --outcome SUCCEEDED
+- Work completed normally
+- Prompt to reflect is gentle, skippable
+- No friction during actual work
 
-# Also updates linked retrospection if exists
-```
+#### What Dev DOESN'T Have To Do
 
-#### Tasks
-- [ ] Add `handoff_id` foreign key to retrospections table
-- [ ] Modify `artifact_mark.py` to update linked retrospection
-- [ ] Add outcome reconciliation logic (human > self-assessed)
-- [ ] Create query: "retrospections with mismatched self vs human outcome"
-
-#### Acceptance Criteria
-- [ ] Retrospection links to handoff when one exists
-- [ ] Human outcome marking updates retrospection
-- [ ] Can query for calibration data (self vs human disagreements)
-- [ ] No orphan retrospections (always linkable to session context)
-
-#### Integration Points
-- **Extends:** Existing `artifact_mark.py` and handoffs table
-- **Enables:** Calibration of self-assessment over time
-
-**Complexity:** Low (1-2 days)
+- Manually log what worked/failed
+- Remember to capture learnings
+- Change their workflow
 
 ---
 
-## Epic 2: Meta-Retrospection (P1 - Core)
+### Journey 3: End-of-Session Reflection
 
-### Story 2.1: Meta-Retrospection Script
+**Goal:** Capture what worked and what didn't while context is fresh.
 
-**As a** system
-**I want** to analyze batches of retrospections
-**So that** I can detect trends and recurring issues
+**Duration:** 30-60 seconds
 
-#### Script Design
+#### Scene
 
-```python
-# scripts/meta_retrospect.py
+Session is ending. Claude offers to reflect. Dev says yes.
 
-"""
-Meta-retrospection: Batch analysis of retrospections.
+#### Flow
 
-Usage:
-    # Analyze last 10 retrospections
-    uv run python scripts/meta_retrospect.py --batch 10
-
-    # Analyze specific date range
-    uv run python scripts/meta_retrospect.py --from 2024-01-01 --to 2024-01-15
-
-    # Output format
-    uv run python scripts/meta_retrospect.py --batch 10 --format json
-    uv run python scripts/meta_retrospect.py --batch 10 --format markdown
-"""
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Claude: "Reflecting on our session...                           │
+│                                                                  │
+│  **What we accomplished:**                                       │
+│  - Added JWT authentication to /api/auth endpoints               │
+│  - Added rate limiting middleware                                │
+│                                                                  │
+│  **What worked well:**                                           │
+│  - Using existing middleware pattern from /api/logging           │
+│  - Testing auth flow with curl before writing unit tests         │
+│                                                                  │
+│  **What we had to retry:**                                       │
+│  - First tried session-based auth (wrong for API)                │
+│  - Initially missed token expiration handling                    │
+│                                                                  │
+│  **Pattern I noticed:**                                          │
+│  'Check existing codebase patterns before implementing new       │
+│   features' - this saved time with rate limiting.                │
+│                                                                  │
+│  Quick feedback: Did this session achieve your goal?             │
+│  [Yes] [Partially] [No] [Skip]"                                  │
+│                                                                  │
+│  Dev: [clicks Yes]                                               │
+│                                                                  │
+│  Claude: "Thanks! Retrospection saved. I'll apply these          │
+│  learnings in future sessions."                                  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Analysis Components
+#### Outcome
 
-**1. Trend Detection**
-```python
-def detect_trends(retrospections: list[Retrospection]) -> TrendAnalysis:
-    """
-    Analyze outcome trends over time.
+- Learnings captured in structured format
+- Dev's feedback calibrates self-assessment
+- Takes seconds, not minutes
 
-    Returns:
-        - outcome_distribution: {succeeded: N, partial: M, failed: K}
-        - trend_direction: "improving" | "stable" | "degrading"
-        - trend_confidence: float (statistical significance)
-    """
-```
+#### What Dev DOESN'T Have To Do
 
-**2. Recurring Issue Detection**
-```python
-def find_recurring_issues(retrospections: list[Retrospection]) -> list[RecurringIssue]:
-    """
-    Find patterns that appear in multiple failed/partial sessions.
-
-    Returns issues with:
-        - pattern: str (the recurring problem)
-        - frequency: int (how many sessions)
-        - session_ids: list[str] (which sessions)
-        - suggested_action: str (rule? skill? process change?)
-    """
-```
-
-**3. Learning Application Rate**
-```python
-def calculate_application_rate(retrospections: list[Retrospection]) -> float:
-    """
-    Measure if previous learnings are being applied.
-
-    Method:
-        1. Get patterns from retrospection N
-        2. Check if patterns addressed in N+1, N+2, ... (via rules/skills created)
-        3. Rate = (patterns that led to artifacts) / (total actionable patterns)
-    """
-```
-
-**4. Effectiveness Correlation**
-```python
-def correlate_effectiveness(
-    retrospections: list[Retrospection],
-    rules: list[str],
-    skills: list[str]
-) -> list[EffectivenessScore]:
-    """
-    Which rules/skills correlate with successful outcomes?
-
-    Returns:
-        - artifact: str (rule or skill name)
-        - sessions_active: int
-        - success_rate_when_active: float
-        - success_rate_baseline: float
-    """
-```
-
-#### Output Schema
-
-```python
-class MetaRetrospection(BaseModel):
-    id: str
-    batch_id: str
-    timestamp: datetime
-
-    # Scope
-    retrospection_ids: list[str]
-    date_range: tuple[datetime, datetime]
-
-    # Analysis
-    outcome_distribution: dict[str, int]
-    trend: TrendAnalysis
-    recurring_issues: list[RecurringIssue]
-    application_rate: float
-    effectiveness_scores: list[EffectivenessScore]
-
-    # Recommendations
-    recommendations: list[Recommendation]
-
-    # Drift (if intent file exists)
-    drift_score: Optional[float]
-    drift_details: Optional[str]
-
-    # For compound-learnings
-    prioritized_patterns: list[PrioritizedPattern]
-```
-
-#### Tasks
-- [ ] Create `scripts/meta_retrospect.py` with CLI interface
-- [ ] Implement trend detection algorithm
-- [ ] Implement recurring issue detection (fuzzy matching on patterns)
-- [ ] Implement application rate calculation
-- [ ] Implement effectiveness correlation
-- [ ] Create `src/schemas/meta_retrospection.py`
-- [ ] Add unit tests for each analysis component
-
-#### Acceptance Criteria
-- [ ] Processes batch of N retrospections in <30 seconds
-- [ ] Correctly identifies issues appearing 3+ times
-- [ ] Application rate matches manual verification on 5 samples
-- [ ] Outputs valid JSON matching schema
-- [ ] Handles edge cases (0 retrospections, all same outcome, etc.)
-
-#### Integration Points
-- **Consumes:** `.claude/cache/retrospections/*.json`
-- **Produces:** `.claude/cache/meta/<batch-id>.json`
-- **Feeds:** `compound-learnings` with prioritized patterns
-
-**Complexity:** High (5-7 days)
+- Write up what happened
+- Categorize learnings
+- Decide what's important to remember
 
 ---
 
-### Story 2.2: Meta-Retrospect Skill
+### Journey 4: Receiving an Alert
 
-**As a** Claude Code user
-**I want** a `/meta-retrospect` command
-**So that** I can trigger batch analysis and see recommendations
+**Goal:** Respond to a pattern the system detected.
 
-#### Skill File
+**Duration:** 2-5 minutes
 
-```markdown
-# .claude/skills/meta-retrospect/SKILL.md
+#### Scene
 
----
-name: meta-retrospect
-description: Analyze batches of past retrospections to detect trends and recurring issues
-allowed-tools: [Read, Bash, Glob]
----
+Dev starts a new session. System has detected a recurring issue.
 
-# Meta-Retrospect
+#### Flow
 
-Batch analysis of retrospections to detect patterns in learning effectiveness.
-
-## When to Use
-
-- "How is the system learning?"
-- "What patterns keep recurring?"
-- "Are my rules/skills effective?"
-- "Run meta-analysis"
-- Weekly/monthly review of learning health
-
-## Process
-
-### Step 1: Check Data Availability
-
-```bash
-# Count available retrospections
-ls $CLAUDE_PROJECT_DIR/.claude/cache/retrospections/*.json 2>/dev/null | wc -l
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Claude: "Before we start, I noticed something across our        │
+│  recent sessions that might be worth addressing.                 │
+│                                                                  │
+│  **Recurring Issue Detected**                                    │
+│                                                                  │
+│  'Forgetting to run tests before committing'                     │
+│  This has come up in 4 of your last 10 sessions.                 │
+│                                                                  │
+│  Recent examples:                                                │
+│  - Jan 10: 'Pushed, CI failed, had to fix'                       │
+│  - Jan 12: 'Same thing, tests would have caught it'              │
+│  - Jan 14: 'Forgot again, wasted 20 min on CI feedback loop'     │
+│                                                                  │
+│  **Suggestion:** Create a rule that reminds me to run tests      │
+│  before any commit.                                              │
+│                                                                  │
+│  [Create Rule] [Dismiss] [Remind Me Later]"                      │
+│                                                                  │
+│  Dev: [clicks Create Rule]                                       │
+│                                                                  │
+│  Claude: "Rule created. I'll now remind you to run tests         │
+│  before commits. You can adjust this in .claude/rules/           │
+│  if needed."                                                     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-Minimum 5 retrospections recommended for meaningful analysis.
+#### Outcome
 
-### Step 2: Run Analysis
+- Issue surfaced with evidence
+- One-click resolution
+- Dev didn't have to notice the pattern themselves
 
-```bash
-uv run python $CLAUDE_PROJECT_DIR/scripts/meta_retrospect.py \
-    --batch 10 \
-    --format markdown
-```
+#### What Dev DOESN'T Have To Do
 
-### Step 3: Review Output
-
-The script produces:
-
-1. **Trend Analysis**: Is learning improving, stable, or degrading?
-2. **Recurring Issues**: Problems appearing 3+ times
-3. **Application Rate**: Are learnings being applied?
-4. **Effectiveness Scores**: Which rules/skills correlate with success?
-5. **Recommendations**: Suggested actions
-
-### Step 4: Act on Recommendations
-
-For each recommendation:
-- **Create rule**: Use compound-learnings skill
-- **Create skill**: Use skill-developer skill
-- **Update existing**: Edit the artifact directly
-- **Dismiss**: Mark as not applicable
-
-### Step 5: Save Report
-
-```bash
-# Report saved to
-$CLAUDE_PROJECT_DIR/.claude/cache/meta/<batch-id>.json
-$CLAUDE_PROJECT_DIR/.claude/cache/meta/<batch-id>.md  # Human-readable
-```
-
-## Integration with Compound Learnings
-
-After meta-retrospect, run compound-learnings with prioritized input:
-
-```bash
-# Meta-retrospect outputs prioritized_patterns.json
-# Compound-learnings can consume this instead of raw learnings
-```
-```
-
-#### Tasks
-- [ ] Create `.claude/skills/meta-retrospect/SKILL.md`
-- [ ] Add triggers to `skill-rules.json`
-- [ ] Create human-readable markdown output format
-- [ ] Test integration with compound-learnings
-
-#### Acceptance Criteria
-- [ ] `/meta-retrospect` command works
-- [ ] Produces both JSON and markdown output
-- [ ] Recommendations are actionable (not vague)
-- [ ] Handles <5 retrospections gracefully (warns, still runs)
-
-**Complexity:** Medium (2-3 days)
+- Review all past sessions
+- Notice the pattern manually
+- Write the rule from scratch
+- Figure out where rules go
 
 ---
 
-### Story 2.3: Compound-Learnings Integration
+### Journey 5: Weekly Health Check
 
-**As a** system
-**I want** compound-learnings to consume meta-retrospect output
-**So that** pattern → artifact conversion is more targeted
+**Goal:** Quick overview of learning system health.
 
-#### Integration Design
+**Duration:** 2-3 minutes, weekly
 
-Current compound-learnings reads raw learnings files and builds frequency tables.
+#### Scene
 
-New flow:
-1. If `prioritized_patterns.json` exists (from meta-retrospect), use it
-2. Otherwise, fall back to existing behavior (read raw files)
+Dev wants to see if the learning system is working. They run the dashboard.
 
-```python
-# In compound-learnings process
-prioritized = Path(".claude/cache/meta/prioritized_patterns.json")
-if prioritized.exists():
-    patterns = load_prioritized_patterns(prioritized)
-    # Patterns already have frequency, category, recommendation
-else:
-    patterns = extract_from_raw_learnings()
-    # Existing behavior
+#### Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Dev: "/dashboard"                                               │
+│                                                                  │
+│  Claude: "                                                       │
+│  ╔═══════════════════════════════════════════════════════════╗  │
+│  ║           LEARNING HEALTH  •  Jan 8-15                    ║  │
+│  ╠═══════════════════════════════════════════════════════════╣  │
+│  ║                                                           ║  │
+│  ║   Sessions: 12        Success Rate: 75% ↑                 ║  │
+│  ║                                                           ║  │
+│  ║   ████████████████████░░░░░░  Succeeded (9)               ║  │
+│  ║   ████░░░░░░░░░░░░░░░░░░░░░░  Partial (3)                 ║  │
+│  ║   ░░░░░░░░░░░░░░░░░░░░░░░░░░  Failed (0)                  ║  │
+│  ║                                                           ║  │
+│  ║   Recurring Issues: 1 (down from 3 last week)             ║  │
+│  ║   Alignment: 92% (well aligned with your goals)           ║  │
+│  ║                                                           ║  │
+│  ║   ✓ System is healthy. No action needed.                  ║  │
+│  ║                                                           ║  │
+│  ╠═══════════════════════════════════════════════════════════╣  │
+│  ║   Top Insight This Week:                                  ║  │
+│  ║   'Running tests before commit' rule applied 8 times,     ║  │
+│  ║   prevented 3 potential CI failures.                      ║  │
+│  ╚═══════════════════════════════════════════════════════════╝  │
+│  "                                                               │
+│                                                                  │
+│  Dev: "Nice, it's working."                                      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Tasks
-- [ ] Add `prioritized_patterns.json` output to meta-retrospect
-- [ ] Modify compound-learnings skill to check for prioritized input
-- [ ] Ensure backward compatibility (works without meta-retrospect)
-- [ ] Document the integration in both skills
+#### Outcome
 
-#### Acceptance Criteria
-- [ ] Compound-learnings prefers prioritized input when available
-- [ ] Falls back gracefully to raw learnings
-- [ ] Prioritized patterns include recommendation type (rule/skill/hook)
-- [ ] No breaking changes to existing compound-learnings usage
+- Quick visual summary
+- Clear health indicator
+- Highlights value delivered
+- No action needed if healthy
 
-**Complexity:** Low (1-2 days)
+#### What Dev DOESN'T Have To Do
+
+- Read through retrospections
+- Calculate metrics manually
+- Dig into details unless curious
 
 ---
 
-## Epic 3: Human Layer (P2)
+### Journey 6: Alignment Correction
 
-### Story 3.1: Intent Configuration
+**Goal:** Redirect the system when it's learning the wrong lessons.
 
-**As a** human operator
-**I want** to define my intent in a configuration file
-**So that** the system knows what success looks like and can detect drift
+**Duration:** 5-10 minutes
 
-#### File Design
+#### Scene
 
-```yaml
-# .claude/intent.yaml
+Dev notices Claude is optimizing for the wrong thing. Maybe it's focused on token efficiency when correctness matters more.
 
-# What success looks like for this project
-goals:
-  - "Produce correct, well-tested code"
-  - "Maintain clear documentation"
-  - "Minimize debugging cycles"
+#### Flow
 
-# What we're explicitly NOT optimizing for
-anti_goals:
-  - "Token efficiency at cost of correctness"
-  - "Speed at cost of quality"
-  - "Complexity for its own sake"
-
-# Observable signals of success
-success_signals:
-  - "Tests pass on first CI run"
-  - "PRs approved without major revisions"
-  - "No production incidents from changes"
-
-# Observable signals of failure
-failure_signals:
-  - "Same bug fixed multiple times"
-  - "Rework requested after review"
-  - "Tests added after bug found"
-
-# Keywords that indicate alignment (for pattern matching)
-alignment_keywords:
-  - "test first"
-  - "verified"
-  - "validated"
-  - "documented"
-
-# Keywords that indicate drift (for pattern matching)
-drift_keywords:
-  - "skipped tests"
-  - "workaround"
-  - "technical debt"
-  - "will fix later"
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Claude: "**Alignment Alert**                                    │
+│                                                                  │
+│  I've noticed my recent learnings might be drifting from         │
+│  your stated goals.                                              │
+│                                                                  │
+│  Your intent says: 'Correctness first'                           │
+│                                                                  │
+│  But my recent learnings focus on:                               │
+│  - 'Reduce token usage' (mentioned 6 times)                      │
+│  - 'Faster completion' (mentioned 4 times)                       │
+│  - 'Correctness/testing' (mentioned 1 time)                      │
+│                                                                  │
+│  This could mean:                                                │
+│  1. Recent sessions were legitimately token-constrained          │
+│  2. I'm optimizing for the wrong thing                           │
+│                                                                  │
+│  What should I do?                                               │
+│                                                                  │
+│  [A] This is fine - efficiency matters now, update my goals      │
+│  [B] This is drift - refocus on correctness                      │
+│  [C] Let me explain the context..."                              │
+│                                                                  │
+│  Dev: "B - we had a crunch but we're past it. Back to quality."  │
+│                                                                  │
+│  Claude: "Understood. I'll weight correctness-related            │
+│  learnings higher going forward. I've also noted that            │
+│  'token efficiency' learnings from Jan 10-15 were                │
+│  context-specific and shouldn't become permanent rules."         │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Tasks
-- [ ] Create `.claude/intent.yaml` template
-- [ ] Add intent loading to retrospect skill
-- [ ] Add intent loading to meta-retrospect script
-- [ ] Document intent file format
+#### Outcome
 
-#### Acceptance Criteria
-- [ ] Intent file is human-editable YAML
-- [ ] Missing intent file doesn't break retrospection (graceful)
-- [ ] Intent loaded and referenced in retrospection output
-- [ ] Keywords used for drift detection
+- System self-identifies drift
+- Human provides context
+- Course correction is instant
+- Drift doesn't become permanent
 
-**Complexity:** Low (1 day)
+#### What Dev DOESN'T Have To Do
+
+- Monitor every retrospection
+- Notice the drift themselves
+- Manually edit learning files
 
 ---
 
-### Story 3.2: Policy Thresholds
+### Journey 7: Creating a New Skill
 
-**As a** human operator
-**I want** to configure alerting thresholds
-**So that** I'm notified only when metrics exceed acceptable levels
+**Goal:** Turn a recurring multi-step pattern into a reusable skill.
 
-#### Policy Section (in intent.yaml)
+**Duration:** 5 minutes
 
-```yaml
-# .claude/intent.yaml (continued)
+#### Scene
 
-policy:
-  # When to alert human
-  thresholds:
-    drift_score: 0.3           # Alert if drift exceeds this
-    recurring_issue_count: 3   # Alert if same issue appears N+ times
-    failed_session_streak: 2   # Alert after N consecutive failures
-    application_rate_min: 0.5  # Alert if rate drops below
+System has noticed dev does the same complex workflow repeatedly. It suggests creating a skill.
 
-  # Meta-retrospection schedule
-  meta_retrospect:
-    trigger: "manual"          # "manual" | "every_n_sessions" | "weekly"
-    batch_size: 10
-    every_n_sessions: 10       # If trigger is "every_n_sessions"
+#### Flow
 
-  # What to do with recommendations
-  recommendations:
-    auto_create: false         # Never auto-create artifacts
-    require_approval: true     # Always ask before creating
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Claude: "I've noticed a pattern across 5 recent sessions.       │
+│                                                                  │
+│  **Pattern: Debug Workflow**                                     │
+│                                                                  │
+│  When debugging, you consistently:                               │
+│  1. Check the error message                                      │
+│  2. Find the relevant file                                       │
+│  3. Look at recent changes (git diff)                            │
+│  4. Check test coverage for that area                            │
+│  5. Form hypothesis and test                                     │
+│                                                                  │
+│  This is more than a simple rule—it's a multi-step process.      │
+│                                                                  │
+│  Would you like me to create a 'debug' skill that guides         │
+│  this workflow? You could invoke it with '/debug'.               │
+│                                                                  │
+│  [Create Skill] [Not Now] [Never for This Pattern]"              │
+│                                                                  │
+│  Dev: [clicks Create Skill]                                      │
+│                                                                  │
+│  Claude: "Created .claude/skills/debug/SKILL.md                  │
+│                                                                  │
+│  Now when you say 'help me debug this' or '/debug',              │
+│  I'll follow this workflow. You can customize the skill          │
+│  file anytime."                                                  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Tasks
-- [ ] Add policy section to intent schema
-- [ ] Implement threshold checking in meta-retrospect
-- [ ] Create alert output format (what triggered, current value, threshold)
-- [ ] Add policy validation on load
+#### Outcome
 
-#### Acceptance Criteria
-- [ ] Invalid policy produces clear error message
-- [ ] Threshold breaches clearly indicated in output
-- [ ] Default thresholds used if policy section missing
-- [ ] Alerts are actionable (include what to do)
+- Complex pattern becomes one-click workflow
+- Skill is customizable
+- Dev's expertise is encoded
 
-**Complexity:** Low (1-2 days)
+#### What Dev DOESN'T Have To Do
+
+- Notice they have a consistent pattern
+- Write the skill from scratch
+- Figure out the skill format
 
 ---
 
-### Story 3.3: Drift Detection
+### Journey 8: Understanding Why
 
-**As a** meta-retrospector
-**I want** to measure how far learnings have drifted from intent
-**So that** I can alert when the system optimizes for wrong goals
+**Goal:** Trace back why a rule or behavior exists.
 
-#### Drift Scoring Algorithm
+**Duration:** 1-2 minutes
 
-```python
-def calculate_drift_score(
-    retrospections: list[Retrospection],
-    intent: Intent
-) -> DriftAnalysis:
-    """
-    Measure alignment between recent learnings and stated intent.
+#### Scene
 
-    Method:
-    1. Extract all patterns from retrospections
-    2. Count alignment_keywords vs drift_keywords in patterns
-    3. Check if patterns address goals vs anti_goals
-    4. Compute drift score: 0.0 (aligned) to 1.0 (drifted)
+Dev encounters a rule they don't remember creating. Or a new team member asks why Claude behaves a certain way.
 
-    Returns:
-        - drift_score: float
-        - alignment_evidence: list[str]  # Patterns aligned with goals
-        - drift_evidence: list[str]      # Patterns drifting toward anti-goals
-        - trend: "improving" | "stable" | "worsening"
-    """
+#### Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  Dev: "Why do you always remind me about tests before commit?"   │
+│                                                                  │
+│  Claude: "That comes from a rule created on Jan 12.              │
+│                                                                  │
+│  **Origin Story:**                                               │
+│                                                                  │
+│  This rule exists because 'forgetting to run tests' appeared     │
+│  as a recurring issue in 4 sessions between Jan 5-12:            │
+│                                                                  │
+│  - Jan 5: CI failed after push, 20 min wasted                    │
+│  - Jan 8: Same issue, tests would have caught bug                │
+│  - Jan 10: Pushed broken code to PR                              │
+│  - Jan 12: You said 'I keep doing this'                          │
+│                                                                  │
+│  On Jan 12, I suggested creating this rule and you approved.     │
+│                                                                  │
+│  Since then, the rule has been applied 12 times and              │
+│  prevented an estimated 4 CI failures.                           │
+│                                                                  │
+│  Want to modify or remove this rule?"                            │
+│                                                                  │
+│  Dev: "No, keep it. Just wanted to know why."                    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Scoring breakdown:**
-- 0.0-0.2: Well aligned
-- 0.2-0.4: Minor drift (acceptable)
-- 0.4-0.6: Moderate drift (review recommended)
-- 0.6-0.8: Significant drift (action needed)
-- 0.8-1.0: Severe drift (urgent attention)
+#### Outcome
 
-#### Tasks
-- [ ] Implement keyword-based drift detection
-- [ ] Add drift analysis to meta-retrospect output
-- [ ] Create drift trend tracking (compare across batches)
-- [ ] Add drift visualization to markdown report
+- Full provenance available
+- Shows value delivered
+- Easy to modify if needed
 
-#### Acceptance Criteria
-- [ ] Drift score is 0.0-1.0 range
-- [ ] Score explainable (shows evidence)
-- [ ] Handles missing intent file (skip drift analysis)
-- [ ] Drift trend tracked across meta-retrospections
+#### What Dev DOESN'T Have To Do
 
-#### Design Decision: Why Not Embeddings?
-
-Embedding-based semantic similarity was considered but rejected:
-- Adds dependency (sentence-transformers)
-- Keyword matching is interpretable
-- Can add embeddings later if keyword approach insufficient
-
-**Complexity:** Medium (2-3 days)
+- Search through files
+- Remember when/why things were created
+- Guess at the reasoning
 
 ---
 
-## Epic 4: Automation & Observability (P3)
+## Experience Principles
 
-### Story 4.1: Automatic Meta-Retrospection Trigger
+### 1. Invisible When Working
 
-**As a** system
-**I want** meta-retrospection to run automatically
-**So that** trends are detected without manual intervention
+During active coding, the learning system is silent. No popups, no interruptions, no "did you know" tooltips. Work flows normally.
 
-#### Trigger Mechanism
+### 2. Gentle at Transitions
 
-Add session counter to retrospection storage:
+Reflection prompts appear only at natural breakpoints:
+- End of session
+- Before starting new task
+- After significant milestone
 
-```python
-# In retrospection_store.py
+Never mid-thought.
 
-def increment_session_counter() -> int:
-    counter_file = Path(".claude/cache/session_counter.txt")
-    count = int(counter_file.read_text()) if counter_file.exists() else 0
-    count += 1
-    counter_file.write_text(str(count))
-    return count
+### 3. Evidence-Based Suggestions
 
-def should_trigger_meta(policy: Policy) -> bool:
-    if policy.meta_retrospect.trigger != "every_n_sessions":
-        return False
-    count = get_session_counter()
-    return count % policy.meta_retrospect.every_n_sessions == 0
-```
+Every suggestion comes with evidence:
+- "This appeared in N sessions"
+- "Here are the specific examples"
+- "This correlates with X% success rate"
 
-Integrate with SessionEnd hook:
+No vague recommendations.
 
-```typescript
-// In session-end hook
-// After retrospection completes, check trigger
-if (shouldTriggerMeta()) {
-    spawnDetached('meta_retrospect.py', ['--batch', config.batchSize]);
-}
-```
+### 4. One-Click Actions
 
-#### Tasks
-- [ ] Add session counter to retrospection store
-- [ ] Add trigger check to SessionEnd hook
-- [ ] Implement quiet mode (no output if all thresholds OK)
-- [ ] Add enable/disable flag in policy
+Common responses are single clicks:
+- [Approve] [Dismiss] [Later]
+- [Yes] [No] [Skip]
 
-#### Acceptance Criteria
-- [ ] Counter persists across sessions
-- [ ] Meta-retrospect runs after configured N sessions
-- [ ] Can be disabled via policy
-- [ ] Non-blocking (doesn't delay session end)
+Typing is optional, never required.
 
-**Complexity:** Medium (2-3 days)
+### 5. Graceful Degradation
+
+System works at every engagement level:
+- **Zero engagement:** System still learns from self-reflection
+- **Minimal engagement:** Occasional yes/no feedback
+- **Full engagement:** Intent file, regular dashboard checks, rule customization
+
+Each level provides value.
 
 ---
 
-### Story 4.2: Dashboard Report
+## Information Architecture
 
-**As a** human operator
-**I want** a readable summary of learning health
-**So that** I can quickly understand system status
+### What Dev Sees (Progressive Disclosure)
 
-#### Report Format
-
-```markdown
-# Learning Health Dashboard
-Generated: 2024-01-15 14:30:00
-
-## Summary
-- **Sessions analyzed:** 10
-- **Date range:** 2024-01-05 to 2024-01-15
-- **Overall health:** Good (no alerts)
-
-## Outcomes
-| Outcome | Count | Percentage |
-|---------|-------|------------|
-| Succeeded | 6 | 60% |
-| Partial+ | 2 | 20% |
-| Partial- | 1 | 10% |
-| Failed | 1 | 10% |
-
-**Trend:** Improving (up from 50% success last batch)
-
-## Learning Metrics
-- **Application rate:** 65% (target: >50%)
-- **Recurring issues:** 2 (threshold: <3)
-- **Drift score:** 0.15 (threshold: <0.3)
-
-## Top Recurring Issues
-1. **"Forgot to run tests before commit"** (3 sessions)
-   - Recommendation: Create pre-commit hook
-2. **"Wrong file path assumptions"** (2 sessions)
-   - Recommendation: Add path validation rule
-
-## Most Effective Rules
-1. `explicit-identity.md` - 80% success when active (vs 55% baseline)
-2. `observe-before-editing.md` - 75% success when active
-
-## Alerts
-None - all thresholds OK
-
-## Recommended Actions
-- [ ] Create pre-commit hook for test running
-- [ ] Review "wrong file path" pattern for rule creation
+```
+Level 0: Nothing (system runs silently)
+    │
+    ▼
+Level 1: Alerts only (threshold breaches)
+    │
+    ▼
+Level 2: Dashboard summary (weekly health)
+    │
+    ▼
+Level 3: Detailed retrospections (on demand)
+    │
+    ▼
+Level 4: Raw data (for debugging)
 ```
 
-#### Tasks
-- [ ] Create `scripts/learning_dashboard.py`
-- [ ] Implement markdown report generation
-- [ ] Add ASCII charts for trends (optional)
-- [ ] Create dashboard skill for easy access
+### Where Things Live
 
-#### Acceptance Criteria
-- [ ] Report is <100 lines (scannable in 2 minutes)
-- [ ] Includes all key metrics
-- [ ] Highlights actionable items
-- [ ] Works with partial data (some metrics may be unavailable)
+```
+For Humans:
+├── /dashboard         → Visual health summary
+├── /retrospect        → Trigger reflection
+├── /meta-retrospect   → Batch analysis
+└── "Why do you..."    → Provenance queries
 
-**Complexity:** Medium (2-3 days)
+For Files:
+├── .claude/intent.yaml           → Human-defined goals (edit directly)
+├── .claude/rules/                → Human-approved rules (edit if needed)
+└── .claude/skills/               → Human-approved skills (edit if needed)
+
+System Internals (rarely need to touch):
+└── .claude/cache/retrospections/ → Learning data
+```
 
 ---
-
-### Story 4.3: Decision Trace
-
-**As a** human operator
-**I want** to trace any artifact back to its origin
-**So that** I can understand why rules/skills exist
-
-#### Trace Query
-
-```bash
-# Trace a rule back to its origin
-uv run python scripts/trace_decision.py --artifact .claude/rules/explicit-identity.md
-
-# Output:
-# Artifact: explicit-identity.md
-# Created: 2024-01-10
-#
-# Origin Chain:
-# 1. Retrospection session-abc (2024-01-05)
-#    Pattern: "IDs lost across agent boundaries"
-#    Outcome: FAILED
-#
-# 2. Retrospection session-def (2024-01-07)
-#    Pattern: "Explicit ID passing succeeded"
-#    Outcome: SUCCEEDED
-#
-# 3. Meta-retrospection batch-001 (2024-01-08)
-#    Recurring issue detected (2 sessions)
-#    Recommendation: Create rule
-#
-# 4. Compound-learnings (2024-01-10)
-#    Pattern approved by user
-#    Rule created
-```
-
-#### Tasks
-- [ ] Add `created_from` metadata to rules/skills
-- [ ] Create `scripts/trace_decision.py`
-- [ ] Link retrospections → meta-batch → artifacts
-- [ ] Store creation provenance in artifact index
-
-#### Acceptance Criteria
-- [ ] Can trace any artifact to source retrospections
-- [ ] Shows full chain (retrospection → meta → artifact)
-- [ ] Handles artifacts created before system (shows "legacy")
-- [ ] Useful for debugging unexpected rules
-
-**Complexity:** Medium (2-3 days)
-
----
-
-## Dependency Graph
-
-```
-Story 1.1 (Schema)
-    ↓
-Story 1.2 (Storage) ──→ Story 2.1 (Meta-Script)
-    ↓                        ↓
-Story 1.3 (Skill) ────→ Story 2.2 (Meta-Skill)
-    ↓                        ↓
-Story 1.4 (Outcomes) ──→ Story 2.3 (Integration)
-                             ↓
-Story 3.1 (Intent) ────→ Story 3.3 (Drift)
-    ↓                        ↓
-Story 3.2 (Policy) ────→ Story 4.1 (Auto-Trigger)
-                             ↓
-                        Story 4.2 (Dashboard)
-                             ↓
-                        Story 4.3 (Trace)
-```
-
-## Priority Summary
-
-| Priority | Epic | Stories | Rationale |
-|----------|------|---------|-----------|
-| **P0** | Structured Retrospection | 1.1, 1.2, 1.3, 1.4 | Foundation - enables all downstream |
-| **P1** | Meta-Retrospection | 2.1, 2.2, 2.3 | Core value - batch analysis |
-| **P2** | Human Layer | 3.1, 3.2, 3.3 | Alignment - drift detection |
-| **P3** | Automation | 4.1, 4.2, 4.3 | Polish - observability |
-
-## Estimated Timeline
-
-| Phase | Stories | Complexity | Estimate |
-|-------|---------|------------|----------|
-| P0 | 1.1-1.4 | Low-Medium | 6-9 days |
-| P1 | 2.1-2.3 | Medium-High | 8-12 days |
-| P2 | 3.1-3.3 | Low-Medium | 4-6 days |
-| P3 | 4.1-4.3 | Medium | 7-9 days |
-
-**Total:** 25-36 days (5-7 weeks)
 
 ## Success Metrics
 
-| Metric | Baseline | Target | Measurement |
-|--------|----------|--------|-------------|
-| Recurring issue rate | ~40% | <20% | % of patterns appearing 3+ times |
-| Learning application rate | Unknown | >60% | % of actionable patterns → artifacts |
-| Drift score | Unmeasured | <0.3 | Keyword-based alignment score |
-| Human execution-fix time | High | <20% | Self-reported time allocation |
+### For Individual Developers
 
-## Out of Scope
+| What They Feel | How We Measure |
+|----------------|----------------|
+| "Claude stops repeating mistakes" | Recurring issue rate <20% |
+| "I spend less time re-explaining" | Session setup time decreases |
+| "Claude remembers what works" | Learning application rate >60% |
+| "The system doesn't annoy me" | Alert frequency <2/week |
 
-1. **External services** - No Braintrust, no paid APIs
-2. **Cross-project learning** - Single project only
-3. **Real-time analysis** - Batch only, not per-turn
-4. **Embedding models** - Keyword-based drift (may add later)
-5. **Auto-creation of artifacts** - Always requires human approval
+### For the System
+
+| Metric | Target | Why It Matters |
+|--------|--------|----------------|
+| Reflection completion rate | >70% | Are devs engaging? |
+| Recommendation acceptance rate | >50% | Are suggestions useful? |
+| Rule effectiveness correlation | >0.3 | Do rules actually help? |
+| Drift detection accuracy | >80% | Can we catch misalignment? |
+
+---
+
+## Constraints
+
+### What This System Is NOT
+
+1. **Not a keylogger.** We don't record everything. Claude reflects on its own work.
+
+2. **Not automatic.** Humans approve every permanent change. No auto-created rules.
+
+3. **Not prescriptive.** System suggests, human decides. Always.
+
+4. **Not invasive.** Zero overhead during active work. Reflection is optional.
+
+5. **Not a replacement for good practices.** This helps Claude learn YOUR practices, not impose its own.
+
+### Technical Boundaries
+
+- **Local only.** No external services required.
+- **File-based.** Human-readable, git-trackable.
+- **Lightweight.** No database servers, no background processes.
+
+---
+
+## Rollout Phases
+
+### Phase 1: Foundation
+
+**What ships:**
+- `/retrospect` command for end-of-session reflection
+- Structured storage of retrospections
+- Basic outcome tracking (success/partial/failed)
+
+**User value:**
+- Sessions have memory
+- "What worked" is captured automatically
+
+### Phase 2: Intelligence
+
+**What ships:**
+- Meta-retrospection (batch analysis)
+- Recurring issue detection
+- Rule/skill suggestions
+
+**User value:**
+- Patterns surface automatically
+- One-click rule creation
+
+### Phase 3: Alignment
+
+**What ships:**
+- Intent file and goal-setting flow
+- Drift detection and alerts
+- Dashboard with health metrics
+
+**User value:**
+- System stays aligned with human goals
+- Visibility into learning health
+
+### Phase 4: Polish
+
+**What ships:**
+- Provenance queries ("why does this rule exist?")
+- Automatic trigger options
+- Team sharing capabilities
+
+**User value:**
+- Full transparency
+- Hands-off operation
+- Knowledge compounds across team
+
+---
 
 ## Open Questions
 
-1. **Retrospection timing:** Should retrospection be required before session end, or optional?
-   - Recommendation: Optional but strongly encouraged (hook prompts but doesn't block)
+1. **How often should we prompt for reflection?**
+   - Every session? Long sessions only? User preference?
 
-2. **Minimum batch size:** What's the minimum for meaningful meta-analysis?
-   - Recommendation: 5 retrospections, warn below this
+2. **What's the right alert threshold?**
+   - Too sensitive = annoying. Too lenient = misses issues.
 
-3. **Pattern deduplication:** How to handle near-duplicate patterns across sessions?
-   - Recommendation: Fuzzy matching with configurable threshold
+3. **Should rules expire?**
+   - If a rule hasn't been relevant in 30 days, should it auto-disable?
 
-4. **Legacy migration:** Import existing `.claude/cache/learnings/*.md` files?
-   - Recommendation: Yes, with best-effort parsing into new schema
+4. **How do we handle conflicting learnings?**
+   - Session A says "approach X works." Session B says "approach X failed."
+
+5. **Multi-project learning?**
+   - Should learnings from Project A inform Project B? When?
+
+---
+
+## Appendix: Interaction Summary
+
+| Touchpoint | Frequency | Duration | Human Effort |
+|------------|-----------|----------|--------------|
+| Initial setup | Once | 15-30 min | Guided conversation |
+| End-of-session reflection | Per session | 30-60 sec | One click + optional feedback |
+| Alert response | ~2/week | 2-5 min | Review + one click |
+| Dashboard check | Weekly | 2-3 min | Glance |
+| Alignment correction | Rare | 5-10 min | Choose option + optional context |
+| **Total weekly** | | | **~15-20 minutes** |
+
+Compare to: Manually tracking learnings, noticing patterns, writing rules (~2-3 hours/week)
