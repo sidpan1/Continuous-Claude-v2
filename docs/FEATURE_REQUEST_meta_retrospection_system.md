@@ -1181,6 +1181,571 @@ If null scenario occurs, investigate:
 
 ---
 
+# Zero External Dependencies Variant
+
+This section describes how to run the full experiment using only free, open-source components and the existing repository infrastructure.
+
+## Dependency Analysis
+
+| Component | Original | Zero-Cost Alternative |
+|-----------|----------|----------------------|
+| **Benchmarks** | SWE-bench Lite | ✅ Free (Hugging Face) |
+| **Tracing** | Braintrust ($) | Local SQLite + JSON logs |
+| **Annotations** | Human annotator ($) | LLM-as-judge (self-annotation) |
+| **Embeddings** | OpenAI/external ($) | Local sentence-transformers |
+| **Model** | Claude API ($) | Required* (see cost reduction) |
+
+*Model costs are unavoidable but can be minimized.
+
+## Alternative Architecture
+
+### 1. Local Tracing (Replace Braintrust)
+
+Use the existing artifact index infrastructure with extended schema:
+
+```python
+# src/meta/local_tracing.py
+
+import sqlite3
+import json
+from datetime import datetime
+from pathlib import Path
+
+class LocalTracer:
+    """
+    Zero-dependency tracing using SQLite.
+    Replaces Braintrust for experiment logging.
+    """
+
+    def __init__(self, db_path: str = ".claude/cache/experiments/traces.db"):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    experiment_id TEXT,
+                    phase INTEGER,
+                    task_id TEXT,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    success INTEGER,
+                    metadata TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS turns (
+                    turn_id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    turn_number INTEGER,
+                    role TEXT,
+                    content TEXT,
+                    timestamp TEXT,
+                    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS tool_calls (
+                    call_id TEXT PRIMARY KEY,
+                    turn_id TEXT,
+                    tool_name TEXT,
+                    input TEXT,
+                    output TEXT,
+                    duration_ms INTEGER,
+                    timestamp TEXT,
+                    FOREIGN KEY (turn_id) REFERENCES turns(turn_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sessions_experiment
+                ON sessions(experiment_id);
+
+                CREATE INDEX IF NOT EXISTS idx_sessions_phase
+                ON sessions(phase);
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts
+                USING fts5(content, content=turns, content_rowid=rowid);
+            """)
+
+    def start_session(self, experiment_id: str, phase: int, task_id: str) -> str:
+        session_id = f"{experiment_id}-{phase}-{task_id}-{datetime.now().isoformat()}"
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT INTO sessions (session_id, experiment_id, phase, task_id, started_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (session_id, experiment_id, phase, task_id, datetime.now().isoformat()))
+        return session_id
+
+    def log_turn(self, session_id: str, turn_number: int, role: str, content: str):
+        turn_id = f"{session_id}-turn-{turn_number}"
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT INTO turns (turn_id, session_id, turn_number, role, content, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (turn_id, session_id, turn_number, role, content, datetime.now().isoformat()))
+        return turn_id
+
+    def end_session(self, session_id: str, success: bool, metadata: dict = None):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                UPDATE sessions
+                SET completed_at = ?, success = ?, metadata = ?
+                WHERE session_id = ?
+            """, (datetime.now().isoformat(), int(success), json.dumps(metadata or {}), session_id))
+
+    def get_phase_stats(self, experiment_id: str, phase: int) -> dict:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("""
+                SELECT
+                    COUNT(*) as total,
+                    SUM(success) as successes,
+                    AVG(julianday(completed_at) - julianday(started_at)) * 24 * 60 as avg_minutes
+                FROM sessions
+                WHERE experiment_id = ? AND phase = ?
+            """, (experiment_id, phase)).fetchone()
+            return {
+                'total': row[0],
+                'successes': row[1] or 0,
+                'success_rate': (row[1] or 0) / row[0] if row[0] else 0,
+                'avg_minutes': row[2] or 0
+            }
+```
+
+### 2. LLM-as-Judge (Replace Human Annotators)
+
+Use Claude to classify its own failures:
+
+```python
+# src/meta/llm_judge.py
+
+from typing import Literal
+
+FAILURE_MODE_PROMPT = """
+Analyze this failed task attempt and classify the failure mode.
+
+## Task Description
+{task_description}
+
+## Agent's Final Output
+{agent_output}
+
+## Test Results
+{test_output}
+
+## Failure Modes (choose ONE):
+
+### Understanding
+- misread_requirements: Solved wrong problem
+- missed_edge_case: Didn't handle boundary condition
+- wrong_scope: Changed too much or too little
+
+### Implementation
+- syntax_error: Code doesn't parse
+- type_error: Type mismatch
+- logic_error: Code runs but wrong output
+- import_error: Missing or wrong imports
+
+### Environment
+- test_flakiness: Test passes/fails intermittently
+- setup_failure: Couldn't configure environment
+- timeout: Exceeded time limit
+
+### Process
+- premature_commit: Submitted before testing
+- incomplete_fix: Partial solution
+- regression: Fixed one thing, broke another
+
+Respond with ONLY the failure mode key (e.g., "logic_error").
+"""
+
+LEARNING_APPLICATION_PROMPT = """
+Did the agent apply any of these prior learnings in its solution?
+
+## Prior Learnings Available
+{learnings}
+
+## Agent's Solution
+{solution}
+
+For each learning, respond:
+- APPLIED: [learning_id] - [brief explanation of how it was applied]
+- NOT_APPLIED: No learnings were applied
+
+Be conservative - only mark as APPLIED if there's clear evidence.
+"""
+
+async def classify_failure(
+    task_description: str,
+    agent_output: str,
+    test_output: str,
+    client  # Claude client
+) -> str:
+    """Classify failure mode using LLM-as-judge."""
+    response = await client.messages.create(
+        model="claude-sonnet-4-20250514",  # Cheaper model for classification
+        max_tokens=50,
+        temperature=0,
+        messages=[{
+            "role": "user",
+            "content": FAILURE_MODE_PROMPT.format(
+                task_description=task_description,
+                agent_output=agent_output,
+                test_output=test_output
+            )
+        }]
+    )
+    return response.content[0].text.strip()
+
+async def check_learning_application(
+    learnings: list[dict],
+    solution: str,
+    client
+) -> dict:
+    """Check if prior learnings were applied using LLM-as-judge."""
+    learnings_text = "\n".join([
+        f"[{l['id']}] {l['insight']}" for l in learnings
+    ])
+    response = await client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=200,
+        temperature=0,
+        messages=[{
+            "role": "user",
+            "content": LEARNING_APPLICATION_PROMPT.format(
+                learnings=learnings_text,
+                solution=solution
+            )
+        }]
+    )
+    text = response.content[0].text
+    if "APPLIED:" in text:
+        # Parse learning ID
+        import re
+        match = re.search(r'APPLIED: \[([^\]]+)\]', text)
+        return {'applied': True, 'learning_id': match.group(1) if match else None}
+    return {'applied': False, 'learning_id': None}
+```
+
+### 3. Local Embeddings (Replace OpenAI)
+
+Use sentence-transformers for drift detection:
+
+```python
+# src/meta/local_embeddings.py
+
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+class LocalEmbedder:
+    """
+    Zero-cost embeddings using sentence-transformers.
+    Model downloads once, runs locally forever.
+    """
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        # Small, fast model (80MB) - downloads once
+        self.model = SentenceTransformer(model_name)
+
+    def embed(self, texts: list[str]) -> np.ndarray:
+        return self.model.encode(texts, normalize_embeddings=True)
+
+    def similarity(self, text1: str, text2: str) -> float:
+        embeddings = self.embed([text1, text2])
+        return float(np.dot(embeddings[0], embeddings[1]))
+
+    def drift_score(self, intent: str, learnings: list[str]) -> float:
+        """
+        Calculate drift score: how far learnings have drifted from intent.
+        Returns 0.0 (perfectly aligned) to 1.0 (completely drifted).
+        """
+        if not learnings:
+            return 0.0
+
+        intent_emb = self.embed([intent])[0]
+        learning_embs = self.embed(learnings)
+
+        # Average similarity to intent
+        similarities = [float(np.dot(intent_emb, l_emb)) for l_emb in learning_embs]
+        avg_similarity = np.mean(similarities)
+
+        # Convert similarity (0-1) to drift (0-1)
+        # similarity=1 → drift=0, similarity=0 → drift=1
+        return 1.0 - avg_similarity
+
+
+# Installation (one-time):
+# pip install sentence-transformers
+# or: uv add sentence-transformers
+```
+
+### 4. Free Benchmark Alternative
+
+If SWE-bench is too heavy, use a lighter alternative:
+
+```python
+# scripts/generate_mini_benchmark.py
+
+"""
+Generate a mini benchmark from this repository's own issues.
+Zero external dependencies.
+"""
+
+import subprocess
+import json
+from pathlib import Path
+
+def extract_test_tasks() -> list[dict]:
+    """
+    Extract tasks from this repo's test failures and past commits.
+    """
+    tasks = []
+
+    # 1. Find commits that fixed bugs (commit message contains "fix")
+    result = subprocess.run(
+        ["git", "log", "--oneline", "--grep=fix", "-n", "20"],
+        capture_output=True, text=True
+    )
+    for line in result.stdout.strip().split('\n'):
+        if line:
+            commit_hash, message = line.split(' ', 1)
+            tasks.append({
+                'id': f'git-{commit_hash}',
+                'type': 'bug_fix',
+                'description': message,
+                'commit': commit_hash,
+                'difficulty': 'medium'
+            })
+
+    # 2. Extract from TODO comments in codebase
+    result = subprocess.run(
+        ["grep", "-r", "TODO:", "--include=*.py", "."],
+        capture_output=True, text=True
+    )
+    for i, line in enumerate(result.stdout.strip().split('\n')[:10]):
+        if line and 'TODO:' in line:
+            tasks.append({
+                'id': f'todo-{i}',
+                'type': 'feature',
+                'description': line.split('TODO:')[1].strip(),
+                'file': line.split(':')[0],
+                'difficulty': 'easy'
+            })
+
+    return tasks
+
+def create_synthetic_tasks() -> list[dict]:
+    """
+    Create synthetic but realistic tasks for testing.
+    """
+    return [
+        {
+            'id': 'synth-1',
+            'type': 'bug_fix',
+            'description': 'Fix: TypeError when calling function with None argument',
+            'setup': 'Create a function that crashes on None, write test that catches it',
+            'difficulty': 'easy'
+        },
+        {
+            'id': 'synth-2',
+            'type': 'feature',
+            'description': 'Add retry logic with exponential backoff to HTTP client',
+            'setup': 'Create HTTP client class, implement retry decorator',
+            'difficulty': 'medium'
+        },
+        {
+            'id': 'synth-3',
+            'type': 'refactor',
+            'description': 'Extract duplicated validation logic into shared module',
+            'setup': 'Create 3 files with duplicated code, refactor to DRY',
+            'difficulty': 'medium'
+        },
+        # Add more as needed...
+    ]
+
+if __name__ == "__main__":
+    tasks = extract_test_tasks() + create_synthetic_tasks()
+    Path(".claude/cache/experiments/mini_benchmark.json").write_text(
+        json.dumps(tasks, indent=2)
+    )
+    print(f"Generated {len(tasks)} tasks")
+```
+
+## Cost Reduction Strategies
+
+### Model Cost Optimization
+
+| Strategy | Savings | Trade-off |
+|----------|---------|-----------|
+| Use Haiku for classification | 90% cheaper than Opus | Lower accuracy on edge cases |
+| Reduce task count (50 → 20 per phase) | 60% reduction | Lower statistical power |
+| Use Sonnet instead of Opus for worker | 80% cheaper | May reduce baseline performance |
+| Cache embeddings | ~100% on repeats | Storage overhead |
+
+### Estimated Costs (Full Experiment)
+
+**Original Design (185 tasks × 4 phases):**
+- Opus worker: ~$150-300 (depending on attempts)
+- Braintrust: ~$50/month
+- Human annotation: ~$200 (100 samples @ $2/each)
+- **Total: ~$400-550**
+
+**Zero-External-Dependencies Design:**
+- Sonnet worker: ~$30-60
+- Local tracing: $0
+- LLM-as-judge (Haiku): ~$5
+- Local embeddings: $0
+- **Total: ~$35-65** (85% reduction)
+
+### Minimal Viable Experiment
+
+For initial validation with minimal cost:
+
+```
+Phases: 3 (skip human tuning phase initially)
+Tasks per phase: 15 (instead of 50)
+Total tasks: 45
+
+Model: Claude Sonnet for worker, Haiku for judge
+Embeddings: Local (sentence-transformers)
+Tracing: Local SQLite
+
+Estimated cost: ~$15-25
+```
+
+## Implementation: Zero-Dependency Experiment Runner
+
+```python
+# scripts/run_experiment_local.py
+
+"""
+Run the meta-retrospection experiment with zero external dependencies.
+
+Usage:
+    uv run python scripts/run_experiment_local.py --phases 3 --tasks-per-phase 15
+"""
+
+import argparse
+import asyncio
+from pathlib import Path
+
+# Local imports (no external deps except anthropic SDK)
+from src.meta.local_tracing import LocalTracer
+from src.meta.llm_judge import classify_failure, check_learning_application
+from src.meta.local_embeddings import LocalEmbedder
+
+
+async def run_experiment(
+    phases: int = 3,
+    tasks_per_phase: int = 15,
+    model: str = "claude-sonnet-4-20250514"
+):
+    """Run experiment with local infrastructure."""
+
+    # Initialize local components
+    tracer = LocalTracer()
+    embedder = LocalEmbedder()
+    experiment_id = f"exp-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+    # Load tasks (from local benchmark or SWE-bench)
+    tasks = load_tasks(tasks_per_phase * phases)
+
+    # Phase 1: Baseline
+    print("Phase 1: Baseline (no learning)")
+    for task in tasks[:tasks_per_phase]:
+        session_id = tracer.start_session(experiment_id, 1, task['id'])
+        success = await run_task(task, model, learnings=[])
+        if not success:
+            failure_mode = await classify_failure(...)
+            tracer.end_session(session_id, False, {'failure_mode': failure_mode})
+        else:
+            tracer.end_session(session_id, True)
+
+    # Phase 2: Retrospection
+    print("Phase 2: Retrospection enabled")
+    learnings = []
+    for task in tasks[tasks_per_phase:tasks_per_phase*2]:
+        session_id = tracer.start_session(experiment_id, 2, task['id'])
+        success = await run_task(task, model, learnings=learnings)
+
+        # Retrospect
+        retrospection = await run_retrospection(task, success)
+        learnings.extend(retrospection['learnings'])
+
+        # Check if prior learning was applied
+        if learnings:
+            application = await check_learning_application(learnings[:-1], ...)
+            tracer.end_session(session_id, success, {
+                'learning_applied': application['learning_id']
+            })
+
+    # Phase 3: Meta-retrospection
+    print("Phase 3: Meta-retrospection enabled")
+    for i, task in enumerate(tasks[tasks_per_phase*2:]):
+        session_id = tracer.start_session(experiment_id, 3, task['id'])
+        success = await run_task(task, model, learnings=learnings)
+
+        # Retrospect
+        retrospection = await run_retrospection(task, success)
+        learnings.extend(retrospection['learnings'])
+
+        # Meta-retrospect every 5 tasks
+        if (i + 1) % 5 == 0:
+            drift_score = embedder.drift_score(
+                intent="Produce reliable, maintainable code",
+                learnings=[l['insight'] for l in learnings[-15:]]
+            )
+            recurring = detect_recurring_issues(tracer, experiment_id, 3)
+            print(f"  Meta-retrospection: drift={drift_score:.2f}, recurring={recurring}")
+
+        tracer.end_session(session_id, success)
+
+    # Generate report
+    report = generate_report(tracer, experiment_id, embedder)
+    Path(f".claude/cache/experiments/{experiment_id}/report.md").write_text(report)
+    print(f"\nExperiment complete. Report: .claude/cache/experiments/{experiment_id}/report.md")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--phases", type=int, default=3)
+    parser.add_argument("--tasks-per-phase", type=int, default=15)
+    parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    args = parser.parse_args()
+
+    asyncio.run(run_experiment(args.phases, args.tasks_per_phase, args.model))
+```
+
+## New Dependencies (All Free)
+
+Add to `pyproject.toml`:
+
+```toml
+[project]
+dependencies = [
+    # Existing...
+    "sentence-transformers>=2.2.0",  # Local embeddings (~80MB model)
+    "datasets>=2.14.0",              # Hugging Face datasets (SWE-bench)
+]
+```
+
+## Summary: What's Paid vs. Free
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| SWE-bench dataset | ✅ Free | Open source on Hugging Face |
+| Local tracing | ✅ Free | SQLite (existing infrastructure) |
+| LLM-as-judge | ✅ Free* | Uses same Claude API as worker |
+| Local embeddings | ✅ Free | sentence-transformers (MIT license) |
+| Statistical analysis | ✅ Free | scipy, pandas (existing) |
+| Braintrust | ❌ Removed | Replaced with local tracer |
+| Human annotators | ❌ Removed | Replaced with LLM-as-judge |
+| External embedding APIs | ❌ Removed | Replaced with local embeddings |
+| **Claude API** | 💰 Required | ~$35-65 for full experiment |
+
+*LLM-as-judge uses the same API calls, so it's "free" in the sense of no additional service costs.
+
+---
+
 ## Original References
 
 - Current learning extraction: `scripts/braintrust_analyze.py`
