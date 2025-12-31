@@ -30,6 +30,7 @@ Instructions for Claude...
 | **Exploration** | rp-explorer, repo-research-analyst, research, morph-search, github-search, ast-grep-find |
 | **Planning** | create_plan, plan-agent, validate-agent, nia-docs |
 | **Implementation** | implement_plan, implement_task, morph-apply, test-driven-development, commit |
+| **Orchestration** | github-orchestration |
 | **Debugging** | debug, debug-agent, debug-hooks, hook-developer, braintrust-analyze |
 | **Context** | continuity_ledger, create_handoff, resume_handoff, recall-reasoning |
 | **Learning** | compound-learnings, skill-developer, describe_pr, qlty-check |
