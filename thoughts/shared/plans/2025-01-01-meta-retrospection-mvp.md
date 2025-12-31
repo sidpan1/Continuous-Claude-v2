@@ -99,6 +99,183 @@ Use SWE-bench Lite as the **workload that drives self-improvement**. Each task p
 
 The learning system and async mode **co-evolve**: async work generates learnings, learnings improve async work.
 
+## Execution Architecture: GitHub Actions (Cloud-First)
+
+**Why GitHub over local SDK:**
+- Unlimited parallelization (each workflow is isolated container)
+- No local compute constraints
+- Native coordination via issues, labels, comments
+- Built-in logging and artifacts
+- Cost effective: ~$0.02/session on Depot vs $0.35/min GitHub-hosted
+- Human can @mention Claude for oversight when needed
+
+**Official support**: `anthropics/claude-code-action` - install via `claude /install-github-app`
+
+### GitHub-Based Orchestration
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ORCHESTRATION FLOW                                              │
+│                                                                  │
+│  1. Create parent issue: "Run SWE-bench Batch 0"                │
+│     └─ Label: 'batch-trigger'                                   │
+│        ↓                                                         │
+│  2. Workflow triggers → Claude analyzes → creates sub-issues    │
+│     └─ Each sub-issue: task_id, repo, test command              │
+│     └─ Label: 'swe-task', 'batch-0'                             │
+│        ↓                                                         │
+│  3. Sub-issue creation triggers parallel workflows              │
+│     └─ Each runs independently in isolated container            │
+│     └─ 5-10 tasks can run simultaneously                        │
+│        ↓                                                         │
+│  4. Per-task workflow:                                          │
+│     ├─ Clone repo                                               │
+│     ├─ Claude works on fix (max 30 min, 5 attempts)             │
+│     ├─ Run tests → PASS/FAIL                                    │
+│     ├─ Post retrospection as comment                            │
+│     └─ Apply label: 'done' or 'failed'                          │
+│        ↓                                                         │
+│  5. Scheduled cron job (every 6 hours):                         │
+│     ├─ Check: all sub-issues in batch labeled 'done'/'failed'?  │
+│     ├─ If yes: run meta-retrospection                           │
+│     ├─ Create summary issue with patterns                       │
+│     └─ Auto-create next batch issue                             │
+│        ↓                                                         │
+│  6. Cycle continues → system improves autonomously              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Workflow Files
+
+**`.github/workflows/batch-orchestrator.yml`**:
+```yaml
+name: Batch Orchestrator
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  create-subtasks:
+    if: contains(github.event.issue.labels.*.name, 'batch-trigger')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Analyze this batch request and create sub-issues for each SWE-bench task.
+            For each task, create an issue with:
+            - Title: [SWE-TASK] <task_id>
+            - Body: Task details, repo URL, test command
+            - Labels: swe-task, batch-N, priority
+            Link back to parent issue #${{ github.event.issue.number }}
+```
+
+**`.github/workflows/swe-task-worker.yml`**:
+```yaml
+name: SWE Task Worker
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  work-on-task:
+    if: |
+      contains(github.event.issue.labels.*.name, 'swe-task') &&
+      github.event.label.name == 'ready'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_tools: "Read,Edit,Bash,Glob,Grep"
+          prompt: |
+            Fix the issue described in this task.
+            1. Clone the repository
+            2. Understand the problem
+            3. Implement the fix
+            4. Run the test command to verify
+            5. If tests pass: comment "COMPLETED" + retrospection JSON
+            6. If tests fail after 5 attempts: comment "FAILED" + failure analysis
+
+            Retrospection format:
+            ```json
+            {
+              "outcome": "PASS|FAIL",
+              "attempts": N,
+              "what_worked": [...],
+              "what_failed": [...],
+              "learnings": [...]
+            }
+            ```
+
+      - name: Update labels on completion
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Parse Claude's last comment for outcome
+            // Apply 'done' or 'failed' label
+```
+
+**`.github/workflows/retrospective-scheduler.yml`**:
+```yaml
+name: Scheduled Retrospective
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  check-and-retrospect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check batch completion
+        uses: actions/github-script@v7
+        id: check
+        with:
+          script: |
+            // Find open batch issues
+            // Check if all sub-tasks are done/failed
+            // Return batch_id if complete
+
+      - uses: anthropics/claude-code-action@v1
+        if: steps.check.outputs.batch_complete == 'true'
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Run meta-retrospection on completed batch.
+            1. Gather all retrospection comments from sub-issues
+            2. Analyze patterns: recurring failures, successful approaches
+            3. Calculate: success rate, avg attempts, common failure modes
+            4. Generate learnings to apply to next batch
+            5. Create summary issue with findings
+            6. Create next batch trigger issue with learnings included
+```
+
+### State Management via Labels
+
+```
+Label State Machine:
+  swe-task     → Task type identifier
+  batch-N      → Batch grouping
+  ready        → Triggers worker workflow
+  in-progress  → Worker is active
+  done         → Tests passed
+  failed       → Max attempts exhausted
+  blocked      → Needs human input
+```
+
+### Cost Estimate (GitHub Actions)
+
+| Runner | Cost | 35 tasks × 30 min |
+|--------|------|-------------------|
+| GitHub-hosted | $0.35/min | ~$370 |
+| Depot | $0.02/session | ~$0.70 |
+| Self-hosted | $0 (your infra) | $0 |
+
+**Recommendation**: Use Depot for 500x cost savings.
+
 ### Async Mode Architecture (SWE-bench Driven)
 
 ```
@@ -218,124 +395,128 @@ Batch 4+ (N tasks):
 
 ---
 
-## Phase 0: Async Runner for SWE-bench
+## Phase 0: GitHub Actions Setup
 
-**Goal**: Basic async execution harness that runs Claude on SWE-bench tasks.
+**Goal**: Set up GitHub-based orchestration for autonomous SWE-bench execution.
 
-### 0.1 SWE-bench Task Loader
+### 0.1 Install Claude GitHub App
 
-**File**: `scripts/swebench_loader.py`
+```bash
+# In repository root
+claude /install-github-app
+
+# This will:
+# 1. Guide GitHub App installation
+# 2. Set up ANTHROPIC_API_KEY secret
+# 3. Create initial workflow file
+```
+
+### 0.2 Create Workflow Files
+
+**File**: `.github/workflows/batch-orchestrator.yml`
+- Triggers on issue with `batch-trigger` label
+- Claude analyzes batch request
+- Creates sub-issues for each SWE-bench task
+
+**File**: `.github/workflows/swe-task-worker.yml`
+- Triggers on `swe-task` + `ready` labels
+- Clones target repo
+- Claude works on fix (45 min timeout)
+- Posts retrospection as comment
+- Applies `done` or `failed` label
+
+**File**: `.github/workflows/retrospective-scheduler.yml`
+- Cron: every 6 hours
+- Checks batch completion via GitHub API
+- Runs meta-retrospection on completed batches
+- Creates next batch trigger issue
+
+### 0.3 Create Helper Scripts
+
+**File**: `scripts/create_batch_issue.py`
 
 ```python
 """
-Load and prepare SWE-bench tasks for async execution.
+Create a batch trigger issue with SWE-bench tasks.
 
 USAGE:
-    # List available tasks
-    uv run python scripts/swebench_loader.py --list
+    # Create batch with 5 random tasks
+    python scripts/create_batch_issue.py --batch 0 --size 5
 
-    # Get specific task
-    uv run python scripts/swebench_loader.py --task django__django-11583
-
-    # Get N random tasks for batch
-    uv run python scripts/swebench_loader.py --sample 10 --difficulty easy
+    # Create batch with specific tasks
+    python scripts/create_batch_issue.py --batch 1 --tasks django__django-11583,pandas__pandas-25678
 """
+import argparse
+from github import Github
 from datasets import load_dataset
 
-def load_task(task_id: str) -> dict:
-    """Load task with issue, repo, test command."""
-    ...
+def create_batch_issue(batch_num: int, task_ids: list[str], learnings: str = ""):
+    """Create GitHub issue that triggers batch orchestration."""
+    g = Github(os.environ["GITHUB_TOKEN"])
+    repo = g.get_repo("owner/repo")
+
+    body = f"""
+## SWE-bench Batch {batch_num}
+
+### Tasks
+{chr(10).join(f'- [ ] {tid}' for tid in task_ids)}
+
+### Prior Learnings
+{learnings or 'None (baseline batch)'}
+
+### Instructions
+This issue will trigger the batch orchestrator workflow.
+Sub-issues will be created for each task above.
+"""
+
+    issue = repo.create_issue(
+        title=f"[BATCH-{batch_num}] Run SWE-bench ({len(task_ids)} tasks)",
+        body=body,
+        labels=["batch-trigger", f"batch-{batch_num}"]
+    )
+    return issue.number
 ```
 
-### 0.2 Async Task Runner
-
-**File**: `scripts/async_runner.py`
-
-**Execution method**: Claude Agent SDK (Python) for real-time streaming and control.
+**File**: `scripts/collect_retrospections.py`
 
 ```python
 """
-Run Claude asynchronously on a coding task with checkpoints.
+Collect retrospection comments from completed batch.
 
 USAGE:
-    # Run single task
-    uv run python scripts/async_runner.py \
-        --task django__django-11583 \
-        --timeout 30 \
-        --max-attempts 5
-
-    # Run batch
-    uv run python scripts/async_runner.py \
-        --batch experiments/batch-001/tasks.json \
-        --parallel 1
-
-REQUIRES:
-    pip install claude-agent-sdk
+    python scripts/collect_retrospections.py --batch 0 --output retrospections/batch-0.json
 """
-from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
-import asyncio
-
-async def run_task(task_id: str, problem: str, repo_path: str, timeout: int = 1800):
-    """Run single SWE-bench task with Claude in headless mode."""
-    async with ClaudeSDKClient() as client:
-        try:
-            async with asyncio.timeout(timeout):
-                await client.query(
-                    prompt=f"Fix this issue:\n{problem}\n\nRun tests to verify.",
-                    session_id=f"swe-bench-{task_id}",
-                    options=ClaudeAgentOptions(
-                        allowedTools=["Read", "Edit", "Bash", "Glob", "Grep"],
-                        max_turns=20,
-                        add_dir=repo_path
-                    )
-                )
-
-                checkpoints = []
-                async for message in client.receive_response():
-                    # Capture tool results for checkpoint data
-                    checkpoints.append(message)
-
-                    # Detect test runs for pass/fail signal
-                    if is_test_result(message):
-                        record_checkpoint(task_id, message)
-
-                return {"status": "completed", "checkpoints": checkpoints}
-
-        except asyncio.TimeoutError:
-            await client.interrupt()
-            return {"status": "timeout", "checkpoints": checkpoints}
+# Queries GitHub API for all issues with batch-N label
+# Extracts retrospection JSON from comments
+# Aggregates into single file for meta-analysis
 ```
 
-**Why SDK over CLI `-p` flag:**
-- Real-time streaming enables checkpoint capture during execution
-- `asyncio.timeout()` for reliable timeout handling
-- `await client.interrupt()` for clean cancellation
-- Structured message types (ToolUseBlock, AssistantMessage)
-- Can run multiple tasks with `asyncio.gather()` and semaphores
+### 0.4 Set Up Labels
 
-**Alternative CLI approach** (simpler but less control):
-```bash
-claude -p "Fix this issue: ..." \
-    --output-format json \
-    --allowedTools "Read,Edit,Bash" \
-    --max-turns 20 \
-    --add-dir /path/to/repo \
-    --dangerously-skip-permissions
+Create these labels in the repository:
+- `batch-trigger` - Triggers orchestrator
+- `swe-task` - Identifies SWE-bench task issues
+- `batch-0`, `batch-1`, ... - Batch grouping
+- `ready` - Task ready for worker
+- `in-progress` - Worker active
+- `done` - Tests passed
+- `failed` - Max attempts exhausted
+- `blocked` - Needs human review
+
+### 0.5 Configure Depot (Optional, Recommended)
+
+For 500x cost reduction:
+
+```yaml
+# .github/workflows/swe-task-worker.yml
+jobs:
+  work-on-task:
+    runs-on: depot-ubuntu-22.04  # Instead of ubuntu-latest
 ```
 
-Core loop:
-1. Clone repo to temp directory
-2. Load task description (issue, hints)
-3. Load prior learnings (if any)
-4. Start Claude session via SDK with objective
-5. Stream and monitor for:
-   - Test pass → success, capture retrospection
-   - Test fail → checkpoint reflection, continue (max 5 retries)
-   - Timeout → interrupt, capture failure retrospection
-   - Max turns → capture failure modes
-6. Clean up, move to next task
+Sign up at depot.dev, connect to GitHub.
 
-### 0.3 Checkpoint Reflection (In-Task)
+### 0.6 Checkpoint Reflection (In-Task)
 
 During async work, after each test failure:
 ```
@@ -847,37 +1028,55 @@ Batch 4: 40-50% (continued improvement)
 
 ## Timeline
 
-### Integrated Build-and-Learn Approach
+### Integrated Build-and-Learn Approach (GitHub-Based)
 
 Build and learn happen together. Each batch builds what's needed for the next.
+**Parallelization via GitHub Actions enables faster iteration.**
 
-| Day | Batch | Tasks | Build | Learn |
-|-----|-------|-------|-------|-------|
-| 1 | Setup | 0 | SWE-bench loader, async runner | - |
-| 2 | 0 | 5 | Intent file, manual retrospection | Baseline failures |
-| 3 | 0→1 | - | Retrospection script from learnings | What to capture |
-| 4-5 | 1 | 10 | Checkpoint format | Escalation patterns |
-| 6 | 1→2 | - | Meta-retrospection from Batch 1 | Pattern detection |
-| 7-8 | 2 | 10 | Learning loading | Transfer effectiveness |
-| 9 | 2→3 | - | Self-correction from patterns | When to pivot |
-| 10-11 | 3 | 10 | Full loop integration | - |
-| 12 | Analysis | - | - | Write results |
+| Day | Activity | Build | Learn |
+|-----|----------|-------|-------|
+| 1 | Setup | Install GitHub App, create workflows, set up labels | - |
+| 2 | Batch 0 | Create batch issue (5 tasks) → runs in parallel | Baseline failures |
+| 3 | Analysis | Collect retrospections, create meta-retrospect workflow | What to capture |
+| 4 | Batch 1 | Create batch with learnings (10 tasks) → parallel | Patterns emerge |
+| 5 | Meta | Scheduled job runs, creates summary issue | Pattern detection |
+| 6 | Batch 2 | Create batch with patterns (10 tasks) → parallel | Transfer test |
+| 7 | Full loop | Verify auto-cycle: batch complete → meta → next batch | Autonomy works |
+| 8 | Batch 3 | System creates batch autonomously (10 tasks) | Self-improvement |
+| 9 | Analysis | Measure success rate trend across batches | - |
 
-**Total**: ~12 days, 35 tasks, ~$30-50
+**Total**: ~9 days, 35 tasks, ~$1-5 (Depot) or ~$370 (GitHub-hosted)
 
 ### Critical Path
 
 ```
-Day 1: SWE-bench loader working
-       └─ Can load and present tasks
-Day 2: Async runner working
-       └─ Can run Claude on task, get pass/fail
-Day 5: Retrospection capturing useful data
-       └─ Structured JSON with what_worked/failed
-Day 8: Meta-retrospection finding real patterns
-       └─ At least 1 actionable pattern from Batch 1
-Day 11: Full loop showing improvement
+Day 1: GitHub Action installed and working
+       └─ Can trigger Claude from issue comment
+Day 2: Batch 0 completes (5 tasks run in parallel)
+       └─ Retrospection comments on each task issue
+Day 5: Meta-retrospection runs automatically
+       └─ Scheduled job creates summary + next batch
+Day 7: Full autonomous loop verified
+       └─ No human intervention needed for batch cycle
+Day 9: Improvement measured
        └─ Batch 3 success rate > Batch 0
+```
+
+### Parallelization Advantage
+
+```
+Local SDK (sequential):
+  Task 1 (30 min) → Task 2 (30 min) → Task 3 (30 min)
+  Total: 90 min for 3 tasks
+
+GitHub Actions (parallel):
+  Task 1 ─┐
+  Task 2 ─┼─→ All complete in ~30 min
+  Task 3 ─┘
+  Total: 30 min for 3 tasks (3x faster)
+
+With 5 parallel workers:
+  Batch of 10 tasks: 2 rounds × 30 min = 60 min (vs 300 min sequential)
 ```
 
 ---
@@ -885,25 +1084,32 @@ Day 11: Full loop showing improvement
 ## File Structure (Final)
 
 ```
+.github/
+├── workflows/
+│   ├── batch-orchestrator.yml           # NEW: Issue → sub-issues
+│   ├── swe-task-worker.yml              # NEW: Work on individual task
+│   └── retrospective-scheduler.yml      # NEW: Cron meta-retrospection
+└── ISSUE_TEMPLATE/
+    └── swe-batch.md                     # NEW: Batch trigger template
+
 .claude/
 ├── intent.yaml                          # NEW: Project goals (drift detection)
 ├── cache/
-│   ├── retrospections/                  # NEW: Session reflections
-│   │   └── YYYY-MM-DD_HH-MM-SS_<id>.json
+│   ├── retrospections/                  # NEW: Aggregated from GitHub
+│   │   └── batch-N.json
 │   ├── meta-retrospections/             # NEW: Batch analyses
-│   │   └── YYYY-MM-DD_batch-N.json
+│   │   └── batch-N-meta.json
 │   └── learnings/                        # NEW: Extracted patterns
 │       └── <pattern-hash>.md
 ├── skills/
 │   ├── retrospect/SKILL.md              # NEW
 │   └── meta-retrospect/SKILL.md         # NEW
 └── hooks/
-    └── session-end-retrospect.sh        # NEW (optional)
+    └── session-end-retrospect.sh        # OPTIONAL (for local dev)
 
 scripts/
-├── swebench_loader.py                   # NEW: Load SWE-bench tasks
-├── async_runner.py                      # NEW: Run Claude async on task
-├── retrospect.py                        # NEW: Capture reflections
+├── create_batch_issue.py                # NEW: Create batch trigger issue
+├── collect_retrospections.py            # NEW: Gather from GitHub comments
 ├── meta_retrospect.py                   # NEW: Batch analysis
 └── artifact_schema.sql                  # UPDATED: Add retrospections
 
@@ -911,18 +1117,10 @@ docs/meta-learning/
 ├── concept-note.md                      # Existing
 ├── product-spec.md                      # Existing
 └── experiment-results.md                # NEW: After batches complete
-
-experiments/
-└── batch-XXX/                           # NEW: Per-batch data
-    ├── config.json                      # Batch configuration
-    ├── tasks/                           # Task assignments
-    │   └── <task-id>/
-    │       ├── checkpoints/             # Mid-task reflections
-    │       └── result.json              # Final outcome
-    ├── retrospections/                  # End-of-task reflections
-    └── meta/                            # Batch-level analysis
-        └── patterns.json
 ```
+
+**Note**: GitHub Issues serve as the primary data store during execution.
+Retrospections are posted as comments, aggregated by scripts after batch completion.
 
 ---
 
