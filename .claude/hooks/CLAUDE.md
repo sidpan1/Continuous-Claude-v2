@@ -54,6 +54,20 @@ echo '{"prompt": "test"}' | ./my-hook.sh
 git add src/ dist/
 ```
 
+## Shell Wrapper Pattern
+
+Shell wrappers must use portable paths (not `~/.claude/hooks`):
+
+```bash
+#!/bin/bash
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+cat | node dist/my-hook.mjs
+```
+
+This ensures hooks work regardless of where the project is cloned.
+
 ## Hook Input/Output
 
 ```typescript
