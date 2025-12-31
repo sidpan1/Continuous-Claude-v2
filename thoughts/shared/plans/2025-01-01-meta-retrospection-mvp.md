@@ -251,6 +251,8 @@ def load_task(task_id: str) -> dict:
 
 **File**: `scripts/async_runner.py`
 
+**Execution method**: Claude Agent SDK (Python) for real-time streaming and control.
+
 ```python
 """
 Run Claude asynchronously on a coding task with checkpoints.
@@ -266,19 +268,71 @@ USAGE:
     uv run python scripts/async_runner.py \
         --batch experiments/batch-001/tasks.json \
         --parallel 1
+
+REQUIRES:
+    pip install claude-agent-sdk
 """
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+import asyncio
+
+async def run_task(task_id: str, problem: str, repo_path: str, timeout: int = 1800):
+    """Run single SWE-bench task with Claude in headless mode."""
+    async with ClaudeSDKClient() as client:
+        try:
+            async with asyncio.timeout(timeout):
+                await client.query(
+                    prompt=f"Fix this issue:\n{problem}\n\nRun tests to verify.",
+                    session_id=f"swe-bench-{task_id}",
+                    options=ClaudeAgentOptions(
+                        allowedTools=["Read", "Edit", "Bash", "Glob", "Grep"],
+                        max_turns=20,
+                        add_dir=repo_path
+                    )
+                )
+
+                checkpoints = []
+                async for message in client.receive_response():
+                    # Capture tool results for checkpoint data
+                    checkpoints.append(message)
+
+                    # Detect test runs for pass/fail signal
+                    if is_test_result(message):
+                        record_checkpoint(task_id, message)
+
+                return {"status": "completed", "checkpoints": checkpoints}
+
+        except asyncio.TimeoutError:
+            await client.interrupt()
+            return {"status": "timeout", "checkpoints": checkpoints}
+```
+
+**Why SDK over CLI `-p` flag:**
+- Real-time streaming enables checkpoint capture during execution
+- `asyncio.timeout()` for reliable timeout handling
+- `await client.interrupt()` for clean cancellation
+- Structured message types (ToolUseBlock, AssistantMessage)
+- Can run multiple tasks with `asyncio.gather()` and semaphores
+
+**Alternative CLI approach** (simpler but less control):
+```bash
+claude -p "Fix this issue: ..." \
+    --output-format json \
+    --allowedTools "Read,Edit,Bash" \
+    --max-turns 20 \
+    --add-dir /path/to/repo \
+    --dangerously-skip-permissions
 ```
 
 Core loop:
 1. Clone repo to temp directory
 2. Load task description (issue, hints)
 3. Load prior learnings (if any)
-4. Start Claude Code session with objective
-5. Monitor for:
+4. Start Claude session via SDK with objective
+5. Stream and monitor for:
    - Test pass → success, capture retrospection
-   - Test fail → checkpoint reflection, retry
-   - Timeout → capture failure retrospection
-   - Max attempts → capture failure modes
+   - Test fail → checkpoint reflection, continue (max 5 retries)
+   - Timeout → interrupt, capture failure retrospection
+   - Max turns → capture failure modes
 6. Clean up, move to next task
 
 ### 0.3 Checkpoint Reflection (In-Task)
