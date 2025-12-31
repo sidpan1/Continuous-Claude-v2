@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
-cd ~/.claude/hooks
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+
 # Pass PPID to Node so it can find the correct context file
 export CLAUDE_PPID="$PPID"
-cat | node dist/skill-activation-prompt.mjs
+
+run_hook "skill-activation-prompt"

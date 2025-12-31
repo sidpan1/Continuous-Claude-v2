@@ -54,6 +54,37 @@ echo '{"prompt": "test"}' | ./my-hook.sh
 git add src/ dist/
 ```
 
+## Shell Wrapper Pattern
+
+Shell wrappers use `utils.sh` for dual installation (workspace first, global fallback):
+
+```bash
+#!/bin/bash
+set -e
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+run_hook "my-hook"
+```
+
+**Available functions in `utils.sh`:**
+| Function | Description |
+|----------|-------------|
+| `run_hook "name"` | Run compiled hook (.mjs only) |
+| `run_hook_dev "name"` | Run hook with TypeScript fallback for development |
+
+## Installation Modes
+
+| Mode | Location | Use Case |
+|------|----------|----------|
+| **Workspace** | `$PROJECT/.claude/hooks/` | Project-specific hooks (takes priority) |
+| **Global** | `~/.claude/hooks/` | Shared hooks across all projects |
+
+**Install globally:**
+```bash
+cp -r .claude/hooks ~/.claude/hooks
+```
+
+Workspace hooks always take priority over global hooks.
+
 ## Hook Input/Output
 
 ```typescript
