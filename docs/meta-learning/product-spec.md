@@ -740,6 +740,102 @@ Issues are both **work containers** and **learning artifacts**.
 
 ---
 
+## Cognitive Load Design
+
+### The Goal: Zero-Thought Operation
+
+The human should be able to use this system **without thinking about it**. Their cognitive budget is reserved for creative, strategic, and alignment decisions—not system management.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  HUMAN ATTENTION BUDGET                                          │
+│                                                                  │
+│  During work:        0%  (system invisible)                      │
+│  Between sessions:   0%  (continuity automatic)                  │
+│  Weekly:            5 min (digest, only if notable)              │
+│  Monthly:          10 min (meta-review, optional)                │
+│                                                                  │
+│  Creative work: Reserved for actual problems                     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Strategies to Minimize Cognitive Load
+
+#### 1. Infer Instead of Ask
+
+**Don't:** "Did this session succeed? [Yes] [No]"
+
+**Do:** Infer from signals (tests passed, PR merged, positive language). Only ask when confidence is low.
+
+#### 2. Batch Instead of Interrupt
+
+**Don't:** Alert for each pattern, each drift concern, each rule suggestion.
+
+**Do:** Weekly digest with all notable items. One touchpoint, not many.
+
+#### 3. Smart Defaults
+
+**Don't:** Make human configure thresholds, frequencies, channels.
+
+**Do:** Observe patterns, set defaults, confirm once. Adapt silently thereafter.
+
+#### 4. Progressive Autonomy (Trust Ladder)
+
+```
+Level 0: "May I do X?"              → Human approves
+Level 1: "I did X" [Undo]           → Human can reverse
+Level 2: "This week: X, Y, Z"       → Human glances
+Level 3: [Silent unless anomaly]    → Human trusts
+```
+
+System earns autonomy through track record. Different actions at different levels.
+
+#### 5. Push, Don't Pull
+
+**Don't:** Expect human to check dashboard weekly.
+
+**Do:** Push digest only when interesting. Silent when healthy.
+
+#### 6. Summaries, Not Details
+
+**Don't:** "I analyzed 10 retrospections and found that in sessions abc123, def456..."
+
+**Do:** "'Forgot tests' → 4 sessions → [Create rule] [Skip]"
+
+One line. One action. Details available on demand.
+
+### Human Involvement Matrix
+
+| Situation | Human Involvement | Why |
+|-----------|-------------------|-----|
+| Normal work | None | System is invisible |
+| Session outcome | None (inferred) | High-confidence inference |
+| Pattern detected | Weekly batch | Not urgent |
+| Rule creation | Inform + undo | Earned trust |
+| Drift detected | Alert | Alignment is human's job |
+| Architectural choice | Escalate | Creative decision |
+| System stuck | Escalate | Hit limits |
+| Weekly health | Digest (if notable) | Summary, not detail |
+| Meta-review | Optional monthly | For curious users |
+
+### What Human Brain is Reserved For
+
+**YES - Creative/Strategic:**
+- "Which feature should we build?"
+- "Is this the right architecture?"
+- "Does this align with product vision?"
+- "Which approach when multiple valid options?"
+
+**NO - System Management:**
+- "Did that session work?" (inferred)
+- "Should this become a rule?" (batched)
+- "Is the learning system healthy?" (pushed on anomaly)
+- "What's the status of async work?" (pushed on completion)
+
+---
+
 ## Experience Principles
 
 ### 1. Invisible When Working
@@ -884,18 +980,20 @@ Works at every engagement level:
 
 ---
 
-## Appendix: Interaction Budget
+## Appendix: Interaction Budget (Minimal Cognitive Load Model)
 
-| Activity | Frequency | Duration | Annual Hours |
-|----------|-----------|----------|--------------|
-| Onboarding | Once | 15 min | 0.25 |
-| Objective setting | 2/week | 5 min | 8.7 |
-| Session reflection | Daily | 30 sec | 3 |
-| Outcome marking | Daily | 5 sec | 0.5 |
-| Alert response | 2/week | 3 min | 5.2 |
-| Dashboard check | Weekly | 2 min | 1.7 |
-| Meta-review | Monthly | 10 min | 2 |
-| **Total** | | | **~22 hours/year** |
+| Activity | Frequency | Duration | Annual Hours | Notes |
+|----------|-----------|----------|--------------|-------|
+| Onboarding | Once | 10 min | 0.17 | Observe-first, confirm-later |
+| Objective setting | 2/week | 2 min | 3.5 | "Continue from last time" default |
+| Session reflection | — | — | 0 | Inferred, not asked |
+| Outcome marking | — | — | 0 | Inferred from signals |
+| Weekly digest | Weekly | 3 min | 2.6 | Only if notable; pushed, not pulled |
+| Exception escalation | ~1/week | 3 min | 2.6 | Creative decisions only |
+| Meta-review | Monthly | 10 min | 2 | Optional, for curious users |
+| **Total** | | | **~11 hours/year** |
+
+**Cognitive load reduced by 50%** compared to ask-everything model.
 
 Compare to: Manual learning tracking, pattern detection, rule writing (~100+ hours/year)
 
